@@ -11,15 +11,49 @@ import cs202_support.x86exp as x86
 # select-instructions
 ##################################################
 
+class SelectionError(Exception):
+    pass
+
+class PrintError(Exception):
+    pass
+
 def select_instructions(program: Module) -> x86.Program:
     """
     Transforms a Lmin program into a pseudo-x86 assembly program.
     :param program: a Lmin program
     :return: a pseudo-x86 program
     """
+    match program:
+        case Module(
+            [
+                Expr(
+                    Call(
+                        Name("print", Load()),
+                    [
+                        Constant(
+                            n, None
+                        )
+                    ], []))
+            ]):
+            p = x86.Program({
+                'start':
+                [
+                    x86.NamedInstr(
+                        "movq",
+                        [
+                            x86.Immediate(n),
+                            x86.Reg("rdi")
+                        ]
+                    ),
+                    x86.Callq("print_int"),
+                    x86.Jmp("conclusion")
+                ]
+            })
+            return p
+        case _:
+            raise SelectionError(program)
 
-    # YOUR CODE HERE
-    pass
+
 
 
 ##################################################
@@ -32,9 +66,45 @@ def print_x86(program: x86.Program) -> str:
     :param program: An x86 program.
     :return: A string, ready for gcc.
     """
+    head = """    .globl main
+main:
+    pushq %rbp
+    movq %rsp, %rbp
+    jmp start
+"""
+    foot = """conclusion:
+    movq $0, %rax
+    popq %rbp
+    retq
+"""
+    def program_to(program: x86.Program) -> str:
+        pass
+    def instruction_to(instruction: x86.Instr)
+    
+    body = ""
+    for block, instructions in program.blocks.items():
+        body += f"{block}:\n"
+        for instruction in instructions:
+            match instruction:
+                case x86.NamedInstr(name, registers):
+                    body += f"    {name}"
+                    for register in registers:
+                        match register:
+                            case x86.Immediate(n):
+                                body += f" ${n}"
+                            case x86.Reg(s):
+                                body += f" %{s}"
+                            case _:
+                                raise PrintError(program)
+                case x86.Callq(label):
+                    body += f"    callq {label}"
+                case x86.Jmp(label):
+                    body += f"    jmp {label}"
+                case _:
+                    raise PrintError(program)
+            body += "\n"
 
-    # YOUR CODE HERE
-    pass
+    return head + body + foot
 
 
 ##################################################
