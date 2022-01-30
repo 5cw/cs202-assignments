@@ -3,6 +3,7 @@ from ast import *
 from typing import List, Set, Dict, Tuple
 import sys
 import traceback
+from dataclasses import dataclass
 
 from cs202_support.base_ast import print_ast
 
@@ -35,11 +36,56 @@ def rco(prog: Module) -> Module:
     :return: An Lvar program with atomic operator arguments.
     """
 
-    pass
+    def simplify_expr(exp: expr, top: bool) -> ([stmt], expr):
+        statements = []
+        match exp:
+            case Constant(_) | Name(_):
+                return [], exp
+            case Call(Name(n), args):
+                new_args = []
+                for arg in args:
+                    new_statements, new_arg = simplify_expr(arg, False)
+                    new_args.append(new_arg)
+                    statements.extend(new_statements)
+                exp = Call(Name(n), new_args)
+            case UnaryOp(op, i):
+                statements, i = simplify_expr(i, False)
+                exp = UnaryOp(op, i)
+            case BinOp(left, op, right):
+                statements, left = simplify_expr(left, False)
+                statements2, right = simplify_expr(right, False)
+                statements.extend(statements2)
+                exp = BinOp(left, op, right)
+            case _:
+                raise Exception("rco/simplify_expr")
+
+        if not top:
+            tmp = Name(gensym("tmp"))
+            statements.append(Assign([tmp], exp))
+            exp = tmp
+        return statements, exp
+
+    new_prog = Module([])
+    for statement in prog.body:
+        match statement:
+            case Expr(exp):
+                new_statements, exp = simplify_expr(exp, True)
+                new_prog.body.extend(new_statements)
+                new_prog.body.append(Expr(exp))
+            case Assign([var], exp):
+                new_statements, exp = simplify_expr(exp, True)
+                new_prog.body.extend(new_statements)
+                new_prog.body.append(Assign([var], exp))
+            case _:
+                raise Exception("rco")
+    return new_prog
+
 
 ##################################################
 # select-instructions
 ##################################################
+
+
 
 def select_instructions(prog: Module) -> x86.Program:
     """
@@ -48,7 +94,94 @@ def select_instructions(prog: Module) -> x86.Program:
     :return: a pseudo-x86 program
     """
 
-    pass
+    valid_calls = {
+        'print': {
+            'name': 'print_int',
+            'args': 1,
+        },
+        'input_int': {
+            'name': 'read_int',
+            'args': 0,
+        }
+    }
+
+    def atom_to_arg(exp: expr) -> x86.Arg:
+        match exp:
+            case Constant(i):
+                return x86.Immediate(i)
+            case Name(n):
+                return x86.Var(n)
+            case _:
+                raise Exception("select_instructions/atom_to_arg")
+
+    def translate_expression(expression: expr) -> [x86.Instr]:
+
+        def move_to_rax(exp: expr) -> x86.Instr:
+            return x86.NamedInstr("movq",
+                                  [atom_to_arg(exp), x86.Reg("rax")]
+                                  )
+
+        instructions = []
+        match expression:
+            case Call(Name(name), args):
+                if name not in valid_calls.keys() or \
+                        len(args) != valid_calls[name]['args']:
+                    raise Exception("select_instructions/call_builtin")
+                if len(args) == 1:
+                    instructions.append(x86.NamedInstr("movq", [atom_to_arg(args[0]), x86.Reg("rdi")]))
+                instructions.append(x86.Callq(valid_calls[name]["name"]))
+                return instructions
+            case UnaryOp(op, exp):
+                match op:
+                    case USub():
+                        instructions = [
+                            move_to_rax(exp),
+                            x86.NamedInstr("negq",
+                                           [x86.Reg("rax")]
+                                           )
+                        ]
+            case BinOp(left, op, right):
+                def bin_math(instr_name: str) -> [x86.Instr]:
+                    return [
+                        move_to_rax(left),
+                        x86.NamedInstr(instr_name,
+                                       [atom_to_arg(right), x86.Reg("rax")]
+                                       )
+                    ]
+                match op:
+                    case Add():
+                        return bin_math("addq")
+                    case Sub():
+                        return bin_math("subq")
+            case Constant(_) | Name(_):
+                return [
+                    move_to_rax(expression)
+                ]
+
+    def translate_statement(statement: stmt) -> [x86.Instr]:
+        match statement:
+            case Expr(exp):
+                return translate_expression(exp)
+            case Assign([Name(n)], exp):
+                instructions = translate_expression(exp)
+                instructions.append(
+                    x86.NamedInstr("movq",
+                                   [x86.Reg("rax"), atom_to_arg(Name(n))]
+                                   )
+                )
+                return instructions
+            case _:
+                raise Exception("select_instructions/translate_statement")
+
+    instructions = []
+    for statement in prog.body:
+        instructions.extend(translate_statement(statement))
+
+    return x86.Program({
+        "start": instructions
+    })
+
+
 
 ##################################################
 # assign-homes
@@ -65,6 +198,7 @@ def assign_homes(program: x86.Program) -> Tuple[x86.Program, int]:
 
     pass
 
+
 ##################################################
 # patch-instructions
 ##################################################
@@ -80,6 +214,7 @@ def patch_instructions(inputs: Tuple[x86.Program, int]) -> Tuple[x86.Program, in
 
     pass
 
+
 ##################################################
 # print-x86
 ##################################################
@@ -93,6 +228,7 @@ def print_x86(inputs: Tuple[x86.Program, int]) -> str:
     """
 
     pass
+
 
 ##################################################
 # Compiler definition
