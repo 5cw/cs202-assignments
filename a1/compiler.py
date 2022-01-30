@@ -1,3 +1,4 @@
+import os
 from ast import *
 from typing import List, Set, Dict, Tuple
 import sys
@@ -66,45 +67,54 @@ def print_x86(program: x86.Program) -> str:
     :param program: An x86 program.
     :return: A string, ready for gcc.
     """
-    head = """    .globl main
-main:
-    pushq %rbp
-    movq %rsp, %rbp
-    jmp start
-"""
-    foot = """conclusion:
-    movq $0, %rax
-    popq %rbp
-    retq
-"""
-    def program_to(program: x86.Program) -> str:
-        pass
-    def instruction_to(instruction: x86.Instr)
-    
-    body = ""
-    for block, instructions in program.blocks.items():
-        body += f"{block}:\n"
-        for instruction in instructions:
-            match instruction:
-                case x86.NamedInstr(name, registers):
-                    body += f"    {name}"
-                    for register in registers:
-                        match register:
-                            case x86.Immediate(n):
-                                body += f" ${n}"
-                            case x86.Reg(s):
-                                body += f" %{s}"
-                            case _:
-                                raise PrintError(program)
-                case x86.Callq(label):
-                    body += f"    callq {label}"
-                case x86.Jmp(label):
-                    body += f"    jmp {label}"
-                case _:
-                    raise PrintError(program)
-            body += "\n"
 
-    return head + body + foot
+
+    def print_program(program: x86.Program) -> str:
+        match program:
+            case x86.Program(blocks):
+                body = ""
+                for name, block in blocks.items():
+                    body += f"{name}:\n"
+                    for instruction in block:
+                        body += f"    {print_instruction(instruction)}\n"
+                return body
+            case _:
+                raise PrintError(program)
+
+    def print_instruction(instruction: x86.Instr) -> str:
+        match instruction:
+            case x86.NamedInstr(name, args):
+                args_str = ", ".join([print_arg(arg) for arg in args])
+                return f"{name} {args_str}"
+            case x86.Callq(label):
+                return f"callq {label}"
+            case x86.Jmp(label):
+                return f"jmp {label}"
+            case x86.Retq():
+                return "retq"
+            case _:
+                raise PrintError(instruction)
+
+    def print_arg(arg: x86.Arg) -> str:
+        match arg:
+            case x86.Immediate(i):
+                return f"${i}"
+            case x86.Reg(name):
+                return f"%{name}"
+
+    globl = "    .globl main\n"
+    program.blocks["main"] = [
+        x86.NamedInstr("pushq", [x86.Reg("rbp")]),
+        x86.NamedInstr("movq", [x86.Reg("rsp"), x86.Reg("rbp")]),
+        x86.Jmp("start")
+    ]
+    program.blocks["conclusion"] = [
+        x86.NamedInstr("movq", [x86.Immediate(0), x86.Reg("rax")]),
+        x86.NamedInstr("popq", [x86.Reg("rbp")]),
+        x86.Retq()
+    ]
+
+    return globl + print_program(program)
 
 
 ##################################################
@@ -143,6 +153,7 @@ def run_compiler(s, logging=False):
 
 
 if __name__ == '__main__':
+    print(os.getcwd())
     if len(sys.argv) != 2:
         print('Usage: python compiler.py <source filename>')
     else:
