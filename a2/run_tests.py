@@ -16,6 +16,7 @@ run_gcc = False
 if len(sys.argv) == 2 and sys.argv[1] == '--run-gcc':
     run_gcc = True
 
+all_passed = True
 for file_name in sorted(os.listdir('tests')):
     if file_name.endswith('.py'):
         with open('tests/' + file_name) as f:
@@ -26,7 +27,7 @@ for file_name in sorted(os.listdir('tests')):
                 ast = parse(program)
                 interpreter_result = eval_Lvar(ast)
             
-                x86_program = run_compiler(program, logging=False)
+                x86_program = run_compiler(program, logging=True)
                 emu = eval_x86.X86Emulator(logging=False)
                 x86_output = emu.eval_program(x86_program)
 
@@ -36,6 +37,7 @@ for file_name in sorted(os.listdir('tests')):
                     print('Test failed! **************************************************')
                     print('Interpreter result:', interpreter_result)
                     print('Compiled x86 result:', x86_output)
+                    all_passed = False
 
                 if run_gcc:
                     asm_file_name = 'tests/' + file_name + '.s'
@@ -67,3 +69,4 @@ for file_name in sorted(os.listdir('tests')):
             except:
                 print('Test failed with error! **************************************************')
                 traceback.print_exception(*sys.exc_info())
+print("All passed" if all_passed else "Some failed")
