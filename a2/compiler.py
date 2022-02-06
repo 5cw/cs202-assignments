@@ -42,7 +42,7 @@ def rco(prog: Module) -> Module:
     :return: An Lvar program with atomic operator arguments.
     """
 
-    def simplify_expr(exp: expr, top: bool) -> Tuple[list[stmt], expr]:
+    def rco_exp(exp: expr, top: bool) -> Tuple[list[stmt], expr]:
         statements = []
         match exp:
             case Constant(_) | Name(_):
@@ -50,40 +50,43 @@ def rco(prog: Module) -> Module:
             case Call(Name(n), args):
                 new_args = []
                 for arg in args:
-                    new_statements, new_arg = simplify_expr(arg, False)
+                    new_statements, new_arg = rco_exp(arg, False)
                     new_args.append(new_arg)
                     statements.extend(new_statements)
                 exp = Call(Name(n), new_args)
             case UnaryOp(op, i):
-                statements, i = simplify_expr(i, False)
+                statements, i = rco_exp(i, False)
                 exp = UnaryOp(op, i)
             case BinOp(left, op, right):
-                statements, left = simplify_expr(left, False)
-                statements2, right = simplify_expr(right, False)
+                statements, left = rco_exp(left, False)
+                statements2, right = rco_exp(right, False)
                 statements.extend(statements2)
                 exp = BinOp(left, op, right)
             case _:
-                raise Exception("rco/simplify_expr")
+                raise Exception("rco/rco_exp")
 
         if not top:
-            tmp = Name(gensym("(tmp)"))
+            tmp = Name(gensym("(tmp)")) # use parentheses because they are not allowed in normal variable names.
             statements.append(Assign([tmp], exp))
             exp = tmp
         return statements, exp
 
-    new_prog = Module([])
-    for statement in prog.body:
+    def rco_stmt(statement: stmt) -> list[stmt]:
         match statement:
             case Expr(exp):
-                new_statements, exp = simplify_expr(exp, True)
-                new_prog.body.extend(new_statements)
-                new_prog.body.append(Expr(exp))
+                new_statements, exp = rco_exp(exp, True)
+                new_statements.append(Expr(exp))
             case Assign([var], exp):
-                new_statements, exp = simplify_expr(exp, True)
-                new_prog.body.extend(new_statements)
-                new_prog.body.append(Assign([var], exp))
+                new_statements, exp = rco_exp(exp, True)
+                new_statements.append(Assign([var], exp))
             case _:
                 raise Exception("rco")
+        return new_statements
+
+    new_prog = Module([])
+    for statement in prog.body:
+        new_prog.body.extend(rco_stmt(statement))
+
     return new_prog
 
 
@@ -176,15 +179,17 @@ def select_instructions(prog: Module) -> x86.Program:
                 instructions = translate_expression(exp)
                 match instructions:
                     case [x86.NamedInstr("movq", [x86.Immediate(i), x86.Reg("rax")])]:
-                        return [x86.NamedInstr("movq", [x86.Immediate(i), atom_to_arg(Name(n))])]
+                        return [x86.NamedInstr("movq",
+                                               [x86.Immediate(i), atom_to_arg(Name(n))]
+                                               )
+                                ]
                     case _:
-                        src = x86.Reg("rax")
-                instructions.append(
-                    x86.NamedInstr("movq",
-                                   [src, atom_to_arg(Name(n))]
-                                   )
-                )
-                return instructions
+                        instructions.append(
+                            x86.NamedInstr("movq",
+                                           [x86.Reg("rax"), atom_to_arg(Name(n))]
+                                           )
+                        )
+                        return instructions
             case _:
                 raise Exception("select_instructions/translate_statement")
 
@@ -263,7 +268,8 @@ def patch_instructions(inputs: Tuple[x86.Program, int]) -> Tuple[x86.Program, in
             case x86.NamedInstr(name, [x86.Deref("rbp", off1), x86.Deref("rbp", off2)]):
                 return [
                     x86.NamedInstr("movq", [x86.Deref("rbp", off1), x86.Reg("rax")]),
-                    x86.NamedInstr(name, [x86.Reg("rax"), x86.Deref("rbp", off2)])
+                    x86.NamedInstr(name, [x86.Reg("rax"), x86.Deref("rbp", off2)]),
+                    x86.NamedInstr("movq", [x86.Reg("rax"), x86.Deref("rbp", off1)])
                 ]
             case _:
                 return [instruction]
@@ -350,7 +356,7 @@ def print_x86(inputs: Tuple[x86.Program, int]) -> str:
             program = x86.Program({
                 "main": main,
                 "start": body,
-                "conclusion ": conclusion
+                "conclusion": conclusion
             })
 
     return ".globl main\n" + print_program(program)
