@@ -1,7 +1,7 @@
 import math
 from ast import *
 
-from typing import List, Set, Dict, Tuple, Optional
+from typing import List, Set, Dict, Tuple, Optional, Union
 import sys
 import traceback
 from dataclasses import dataclass
@@ -25,8 +25,86 @@ def gensym(x):
     return f'{x}_{gensym_num}'
 
 
-
 def eval_partial(prog: Module) -> Module:
+    vals = {}
+
+    def eval_expr(exp: expr) -> expr:
+        match exp:
+            case Name(n):
+                if n in vals.keys():
+                    return vals[n]
+                else:
+                    return Name(n)
+            case UnaryOp(USub(), e):
+                e = eval_expr(e)
+                match e:
+                    case Constant(i):
+                        return Constant(-i)
+            case BinOp(e1, op, e2): #some algebraic manipulation must take place to separate constants and bring them along for the ride.
+                def separate_binop(exp: expr) -> Tuple[Optional[expr], Optional[int], bool]:
+                    match exp:
+                        case BinOp(Constant(i), Add(), other) | BinOp(other, Add(), Constant(i)):
+                            return other, i, True
+                        case BinOp(Constant(i), Sub(), other):
+                            return other, i, False
+                        case BinOp(other, Sub(), Constant(i)):
+                            return other, -i, True
+                        case Constant(i):
+                            return None, i, True
+                        case _:
+                            return exp, None, True
+                    pass
+                e1 = eval_expr(e1)
+                e2 = eval_expr(e2)
+                irr1, c1, pos1 = separate_binop(e1)
+                irr2, c2, pos2 = separate_binop(e2)
+                match op:
+                    case Sub():
+                        if c2:
+                            c2 *= -1
+                        if irr2:
+                            pos2 = not pos2
+                match c1, c2:
+                    case int(i1), int(i2):
+                        constant = Constant(i1 + i2)
+                    case (int(i), None) | (None, int(i)):
+                        constant = Constant(i)
+                    case _:
+                        return exp
+                match irr1, irr2:
+                    case None, None:
+                        return constant
+                    case (i, None) | (None, i):
+                        pos = pos1 and pos2 #None will always be positive
+                        return BinOp(constant, Add() if pos else Sub(), i)
+                    case e1, e2:
+                        first = Add() if pos1 else Sub()
+                        second = Add() if pos1 == pos2 else Sub() #Subtract if e1 is positive and e2 is negative,
+                                                                # or if e1 is negative and e2 is positive.
+                                                                #(the two subtracts will cancel)
+                        return BinOp(constant, first, BinOp(e1, second, e2))
+            case Call(name, args):
+                return Call(name, [eval_expr(arg) for arg in args])
+        return exp
+
+    def eval_stmt(statement: stmt) -> Optional[stmt]:
+        match statement:
+            case Expr(e):
+                return Expr(eval_expr(e))
+            case Assign([Name(n)], e):
+                e = eval_expr(e)
+                match e:
+                    case Constant(_) | BinOp(Constant(_), _, _):
+                        vals[n] = e
+                        return None
+                    case _:
+                        return e
+
+    return Module(list(filter(lambda x: x is not None, [eval_stmt(statement) for statement in prog.body])))
+
+
+
+
     pass
 
 
@@ -66,7 +144,7 @@ def rco(prog: Module) -> Module:
                 raise Exception("rco/rco_exp")
 
         if not top:
-            tmp = Name(gensym("(tmp)")) # use parentheses because they are not allowed in normal variable names.
+            tmp = Name(gensym("(tmp)"))  # use parentheses because they are not allowed in normal variable names.
             statements.append(Assign([tmp], exp))
             exp = tmp
         return statements, exp
@@ -193,7 +271,7 @@ def select_instructions(prog: Module) -> x86.Program:
             case _:
                 raise Exception("select_instructions/translate_statement")
 
-    instructions : list[x86.Instr] = []
+    instructions: list[x86.Instr] = []
     for statement in prog.body:
         instructions.extend(translate_statement(statement))
     instructions.append(x86.Jmp("conclusion"))
@@ -268,8 +346,7 @@ def patch_instructions(inputs: Tuple[x86.Program, int]) -> Tuple[x86.Program, in
             case x86.NamedInstr(name, [x86.Deref("rbp", off1), x86.Deref("rbp", off2)]):
                 return [
                     x86.NamedInstr("movq", [x86.Deref("rbp", off1), x86.Reg("rax")]),
-                    x86.NamedInstr(name, [x86.Reg("rax"), x86.Deref("rbp", off2)]),
-                    x86.NamedInstr("movq", [x86.Reg("rax"), x86.Deref("rbp", off1)])
+                    x86.NamedInstr(name, [x86.Reg("rax"), x86.Deref("rbp", off2)])
                 ]
             case _:
                 return [instruction]
@@ -367,6 +444,7 @@ def print_x86(inputs: Tuple[x86.Program, int]) -> str:
 ##################################################
 
 compiler_passes = {
+    'partial reduce': eval_partial,
     'remove complex opera*': rco,
     'select instructions': select_instructions,
     'assign homes': assign_homes,
