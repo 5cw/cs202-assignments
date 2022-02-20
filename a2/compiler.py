@@ -98,7 +98,7 @@ def eval_partial(prog: Module) -> Module:
                         vals[n] = e
                         return None
                     case _:
-                        return e
+                        return Assign([Name(n)], e)
 
     return Module(list(filter(lambda x: x is not None, [eval_stmt(statement) for statement in prog.body])))
 
