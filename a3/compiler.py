@@ -1,3 +1,4 @@
+import random
 from ast import *
 
 from collections import defaultdict
@@ -220,13 +221,12 @@ def uncover_live(program: x86.Program) -> Tuple[x86.Program, Dict[str, List[Set[
     the program to a list of live-after sets for that label. The live-after
     sets are in the same order as the label's instructions.
     """
-    before = set({})
 
+    before = set()
     def ul_instr(instruction: x86.Instr) -> Set[x86.Var]:
-        global before
         after = before
         reads, writes = reads_writes(instruction)
-        before = (before - writes) + reads
+        before.update((before - writes).union(reads))
         return after
 
     def ul_block(instructions: List[x86.Instr]) -> List[Set[x86.Var]]:
@@ -234,7 +234,7 @@ def uncover_live(program: x86.Program) -> Tuple[x86.Program, Dict[str, List[Set[
 
     match program:
         case x86.Program(blocks):
-            return program, {label: ul_block(instructions) for label, instructions in blocks}
+            return program, {label: ul_block(instructions) for label, instructions in blocks.items()}
 
 
 ##################################################
@@ -247,17 +247,17 @@ class InterferenceGraph:
     are x86.Arg objects and an edge between two nodes indicates that the two
     nodes cannot share the same locations.
     """
-    graph: DefaultDict[x86.Arg, Set[x86.Arg]]
+    graph: DefaultDict[x86.Var, Set[x86.Var]]
 
     def __init__(self):
         self.graph = defaultdict(lambda: set())
 
-    def add_edge(self, a: x86.Arg, b: x86.Arg):
+    def add_edge(self, a: x86.Var, b: x86.Var):
         if a != b:
             self.graph[a].add(b)
             self.graph[b].add(a)
 
-    def neighbors(self, a: x86.Arg) -> Set[x86.Arg]:
+    def neighbors(self, a: x86.Var) -> Set[x86.Var]:
         if a in self.graph:
             return self.graph[a]
         else:
@@ -277,7 +277,7 @@ class InterferenceGraph:
         return 'InterferenceGraph{\n ' + ',\n '.join(strings) + '\n}'
 
 
-def build_interference(inputs: Tuple[x86.Program, Dict[str, List[Set[x86.Arg]]]]) -> \
+def build_interference(inputs: Tuple[x86.Program, Dict[str, List[Set[x86.Var]]]]) -> \
         Tuple[x86.Program, InterferenceGraph]:
     """
     Build the interference graph.
@@ -289,12 +289,12 @@ def build_interference(inputs: Tuple[x86.Program, Dict[str, List[Set[x86.Arg]]]]
     """
     graph = InterferenceGraph()
 
-    def bi_instr(instruction: x86.Instr, live_after: Set[x86.Arg]):
+    def bi_instr(instruction: x86.Instr, live_after: Set[x86.Var]):
         match instruction:
-            case x86.NamedInstr("movq", [source, dest]):
+            case x86.NamedInstr("movq", [source, x86.Var(dest_name)]):
                 for live in live_after:
-                    if live != source and live != dest:
-                        graph.add_edge(dest, live)
+                    if live != source and live != x86.Var(dest_name):
+                        graph.add_edge(x86.Var(dest_name), live)
             case _:
                 match reads_writes(instruction):
                     case _, writes:
@@ -303,7 +303,7 @@ def build_interference(inputs: Tuple[x86.Program, Dict[str, List[Set[x86.Arg]]]]
                                 if write != live:
                                     graph.add_edge(write, live)
 
-    def bi_block(instructions: [x86.Instr], live_after_sets: [Set[x86.Arg]]):
+    def bi_block(instructions: [x86.Instr], live_after_sets: [Set[x86.Var]]):
         for instruction, live_after in zip(instructions, live_after_sets):
             bi_instr(instruction, live_after)
 
@@ -318,8 +318,9 @@ def build_interference(inputs: Tuple[x86.Program, Dict[str, List[Set[x86.Arg]]]]
 ##################################################
 
 Color = int
-Coloring = Dict[x86.Var, Color]
-Saturation = Set[Color]
+Coloring = DefaultDict[x86.Var, Color]
+Saturation = set[Color]
+SatMap = dict[x86.Var, Saturation]
 
 
 def allocate_registers(inputs: Tuple[x86.Program, InterferenceGraph]) -> \
@@ -335,6 +336,74 @@ def allocate_registers(inputs: Tuple[x86.Program, InterferenceGraph]) -> \
     locations.
     """
     register_order = ["rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "rbx", "r12", "r13", "r14", "r15"]
+
+    def ar_select(sat: SatMap) -> x86.Var:
+        max = 0
+        possible = []
+        for var, s in sat.items():
+            if len(s) > max:
+                possible = [var]
+                max = len(s)
+            elif len(s) == max:
+                possible.append(var)
+        return random.choice(possible)
+
+
+    next_color = 0
+    prog, interference = inputs
+    saturation_map = SatMap()
+    for var in interference.graph.keys():
+        saturation_map[var] = Saturation()
+
+    coloring = Coloring(lambda: 0)
+
+    while len(interference.graph) > len(coloring):
+        var = ar_select(saturation_map)
+        if len(saturation_map[var]) >= next_color:
+            color = next_color
+            next_color += 1
+        else:
+            color = min(set(range(next_color)) - saturation_map[var])
+        coloring[var] = color
+        for neighbor in interference.neighbors(var):
+            saturation_map[neighbor].add(color)
+
+    mapping: list[x86.Arg] = [x86.Reg(reg) for reg in register_order]
+    if len(register_order) >= len(coloring):
+        stack_size = 0
+    else:
+        num_vars = len(coloring) - len(register_order)
+        extension = [x86.Deref("rbp", -(8*i)) for i in range(num_vars)]
+        stack_size = num_vars * 8
+        stack_size = stack_size if stack_size % 16 == 0 else stack_size + 8
+        mapping.extend(extension)
+
+    def ar_arg(arg: x86.Arg) -> x86.Arg:
+
+        match arg:
+            case x86.Var(name):
+                return mapping[coloring[arg]]
+            case _:
+                return arg
+
+    def ar_instr(instruction: x86.Instr) -> x86.Instr:
+        print_ast(instruction)
+        match instruction:
+            case x86.NamedInstr(name, args):
+                return x86.NamedInstr(name, [ar_arg(arg) for arg in args])
+            case _:
+                return instruction
+
+    def ar_block(block: list[x86.Instr]) -> list[x86.Instr]:
+        return [ar_instr(instruction) for instruction in block]
+
+    return x86.Program({
+        key: ar_block(block) for key, block in prog.blocks.items()
+    }), stack_size
+
+
+
+
 
 
 ##################################################
@@ -387,7 +456,69 @@ def print_x86(inputs: Tuple[x86.Program, int]) -> str:
     :return: A string, ready for gcc.
     """
 
-    pass
+    def print_program(program: x86.Program) -> str:
+        match program:
+            case x86.Program(blocks):
+                body = ""
+                for name, block in blocks.items():
+                    body += f"{name}:\n"
+                    for instruction in block:
+                        body += f"    {print_instruction(instruction)}\n"
+                return body
+            case _:
+                raise Exception("print_x86/print_program")
+
+    def print_instruction(instruction: x86.Instr) -> str:
+        match instruction:
+            case x86.NamedInstr(name, args):
+                args_str = ", ".join([print_arg(arg) for arg in args])
+                return f"{name} {args_str}"
+            case x86.Callq(label):
+                return f"callq {label}"
+            case x86.Jmp(label):
+                return f"jmp {label}"
+            case x86.Retq():
+                return "retq"
+            case _:
+                raise Exception("print_x86/print_instruction")
+
+    def print_arg(arg: x86.Arg) -> str:
+        match arg:
+            case x86.Immediate(i):
+                return f"${i}"
+            case x86.Reg(name):
+                return f"%{name}"
+            case x86.Deref(name, off):
+                return f"{off}(%{name})"
+            case _:
+                raise Exception("print_x86/print_arg")
+
+    program = None
+    main = [
+        x86.NamedInstr("pushq", [x86.Reg("rbp")]),
+        x86.NamedInstr("movq", [x86.Reg("rsp"), x86.Reg("rbp")]),
+        x86.NamedInstr("subq", [x86.Immediate(inputs[1]), x86.Reg("rsp")]),
+        x86.Jmp("start")
+    ]
+    conclusion = [
+        x86.NamedInstr("movq", [x86.Immediate(0), x86.Reg("rax")]),
+        x86.NamedInstr("addq", [x86.Immediate(inputs[1]), x86.Reg("rsp")]),
+        x86.NamedInstr("popq", [x86.Reg("rbp")]),
+        x86.Retq()
+    ]
+    if inputs[1] == 0:
+        del main[2]
+        del conclusion[1]
+
+    match inputs[0]:
+        case x86.Program({"start": body}):
+            program = x86.Program({
+                "main": main,
+                "start": body,
+                "conclusion": conclusion
+            })
+
+    return ".globl main\n" + print_program(program)
 
 
 ##################################################
