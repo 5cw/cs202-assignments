@@ -202,8 +202,15 @@ def reads_writes(instruction: x86.Instr) -> Tuple[Set[x86.Var], Set[x86.Var]]:
         case _:
             reads, writes = set(), set()
 
-    return {read for read in reads if isinstance(read, x86.Var)}, \
-           {write for write in writes if isinstance(writes, x86.Var)}
+    def is_var(arg: x86.Arg) -> bool:
+        match arg:
+            case x86.Var(_):
+                return True
+            case _:
+                return False
+
+    return {read for read in reads if is_var(read)}, \
+           {write for write in writes if is_var(write)}
 
 
 
@@ -226,11 +233,12 @@ def uncover_live(program: x86.Program) -> Tuple[x86.Program, Dict[str, List[Set[
     def ul_instr(instruction: x86.Instr) -> Set[x86.Var]:
         after = before
         reads, writes = reads_writes(instruction)
-        before.update((before - writes).union(reads))
+        before.difference_update(writes)
+        before.update(reads)
         return after
 
     def ul_block(instructions: List[x86.Instr]) -> List[Set[x86.Var]]:
-        return [ul_instr(instruction) for instruction in instructions]
+        return list(reversed([ul_instr(instruction).copy() for instruction in reversed(instructions)]))
 
     match program:
         case x86.Program(blocks):
@@ -318,7 +326,7 @@ def build_interference(inputs: Tuple[x86.Program, Dict[str, List[Set[x86.Var]]]]
 ##################################################
 
 Color = int
-Coloring = DefaultDict[x86.Var, Color]
+Coloring = dict[x86.Var, Color]
 Saturation = set[Color]
 SatMap = dict[x86.Var, Saturation]
 
@@ -341,11 +349,12 @@ def allocate_registers(inputs: Tuple[x86.Program, InterferenceGraph]) -> \
         max = 0
         possible = []
         for var, s in sat.items():
-            if len(s) > max:
-                possible = [var]
-                max = len(s)
-            elif len(s) == max:
-                possible.append(var)
+            if var not in coloring.keys():
+                if len(s) > max:
+                    possible = [var]
+                    max = len(s)
+                elif len(s) == max:
+                    possible.append(var)
         return random.choice(possible)
 
 
@@ -355,7 +364,7 @@ def allocate_registers(inputs: Tuple[x86.Program, InterferenceGraph]) -> \
     for var in interference.graph.keys():
         saturation_map[var] = Saturation()
 
-    coloring = Coloring(lambda: 0)
+    coloring = Coloring()
 
     while len(interference.graph) > len(coloring):
         var = ar_select(saturation_map)
@@ -372,8 +381,8 @@ def allocate_registers(inputs: Tuple[x86.Program, InterferenceGraph]) -> \
     if len(register_order) >= len(coloring):
         stack_size = 0
     else:
-        num_vars = len(coloring) - len(register_order)
-        extension = [x86.Deref("rbp", -(8*i)) for i in range(num_vars)]
+        num_vars = len(coloring) - len(register_order) + 1
+        extension = [x86.Deref("rbp", -(8*(i))) for i in range(1,num_vars)]
         stack_size = num_vars * 8
         stack_size = stack_size if stack_size % 16 == 0 else stack_size + 8
         mapping.extend(extension)
@@ -381,7 +390,9 @@ def allocate_registers(inputs: Tuple[x86.Program, InterferenceGraph]) -> \
     def ar_arg(arg: x86.Arg) -> x86.Arg:
 
         match arg:
-            case x86.Var(name):
+            case x86.Var(_):
+                if arg not in coloring.keys():
+                    return mapping[0]
                 return mapping[coloring[arg]]
             case _:
                 return arg
