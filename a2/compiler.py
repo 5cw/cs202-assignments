@@ -161,11 +161,11 @@ def rco(prog: Module) -> Module:
                 raise Exception("rco")
         return new_statements
 
-    new_prog = Module([])
+    new_prog = []
     for statement in prog.body:
-        new_prog.body.extend(rco_stmt(statement))
+        new_prog.extend(rco_stmt(statement))
 
-    return new_prog
+    return Module(new_prog)
 
 
 ##################################################
