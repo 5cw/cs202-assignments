@@ -357,8 +357,7 @@ def allocate_registers(inputs: Tuple[x86.Program, InterferenceGraph]) -> \
                     possible.append(var)
         return random.choice(possible)
 
-
-    next_color = 0
+    num_colors = 0
     prog, interference = inputs
     saturation_map = SatMap()
     for var in interference.graph.keys():
@@ -368,21 +367,21 @@ def allocate_registers(inputs: Tuple[x86.Program, InterferenceGraph]) -> \
 
     while len(interference.graph) > len(coloring):
         var = ar_select(saturation_map)
-        if len(saturation_map[var]) >= next_color:
-            color = next_color
-            next_color += 1
+        if len(saturation_map[var]) >= num_colors:
+            color = num_colors
+            num_colors += 1
         else:
-            color = min(set(range(next_color)) - saturation_map[var])
+            color = min(set(range(num_colors)) - saturation_map[var])
         coloring[var] = color
         for neighbor in interference.neighbors(var):
             saturation_map[neighbor].add(color)
 
     mapping: list[x86.Arg] = [x86.Reg(reg) for reg in register_order]
-    if len(register_order) >= len(coloring):
+    if len(register_order) > num_colors:
         stack_size = 0
     else:
-        num_vars = len(coloring) - len(register_order) + 1
-        extension = [x86.Deref("rbp", -(8*(i))) for i in range(1,num_vars)]
+        num_vars = num_colors - len(register_order)
+        extension = [x86.Deref("rbp", -(8 * i)) for i in range(1, num_vars + 1)]
         stack_size = num_vars * 8
         stack_size = stack_size if stack_size % 16 == 0 else stack_size + 8
         mapping.extend(extension)
