@@ -10,8 +10,6 @@ from cs202_support.base_ast import print_ast
 
 import cs202_support.x86exp as x86
 
-INTER_LINE_EVAL = True #change to False if you want to make sure that the program retains all original assignments
-
 gensym_num = 0
 
 
@@ -43,15 +41,48 @@ def eval_partial(prog: Module) -> Module:
                     case Constant(i):
                         return Constant(-i)
             case BinOp(e1, op, e2): #I wrote this thinking that input_int() would interpret properly.
+                def separate_binop(exp: expr) -> Tuple[Optional[expr], Optional[int], bool]:
+                    match exp:
+                        case BinOp(Constant(i), Add(), other) | BinOp(other, Add(), Constant(i)):
+                            return other, i, True
+                        case BinOp(Constant(i), Sub(), other):
+                            return other, i, False
+                        case BinOp(other, Sub(), Constant(i)):
+                            return other, -i, True
+                        case Constant(i):
+                            return None, i, True
+                        case _:
+                            return exp, None, True
+                    pass
                 e1 = eval_expr(e1)
                 e2 = eval_expr(e2)
-                match e1, e2:
-                    case Constant(i1), Constant(i2):
-                        match op:
-                            case Add():
-                                return Constant(i1+i2)
-                            case Sub():
-                                return Constant(i1-i2)
+                irr1, c1, pos1 = separate_binop(e1)
+                irr2, c2, pos2 = separate_binop(e2)
+                match op:
+                    case Sub():
+                        if c2:
+                            c2 *= -1
+                        if irr2:
+                            pos2 = not pos2
+                match c1, c2:
+                    case int(i1), int(i2):
+                        constant = Constant(i1 + i2)
+                    case (int(i), None) | (None, int(i)):
+                        constant = Constant(i)
+                    case _:
+                        return exp
+                match irr1, irr2:
+                    case None, None:
+                        return constant
+                    case (i, None) | (None, i):
+                        pos = pos1 and pos2 #None will always be positive
+                        return BinOp(constant, Add() if pos else Sub(), i)
+                    case e1, e2:
+                        first = Add() if pos1 else Sub()
+                        second = Add() if pos1 == pos2 else Sub() #Subtract if e1 is positive and e2 is negative,
+                                                                # or if e1 is negative and e2 is positive.
+                                                                #(the two subtracts will cancel)
+                        return BinOp(constant, first, BinOp(e1, second, e2))
             case Call(name, args):
                 return Call(name, [eval_expr(arg) for arg in args])
         return exp
@@ -62,10 +93,12 @@ def eval_partial(prog: Module) -> Module:
                 return Expr(eval_expr(e))
             case Assign([Name(n)], e):
                 e = eval_expr(e)
-                if INTER_LINE_EVAL:
-                    vals[n] = e
-                    return None
-                return Assign([Name(n)], e)
+                match e:
+                    case Constant(_) | BinOp(Constant(_), _, _):
+                        vals[n] = e
+                        return None
+                    case _:
+                        return Assign([Name(n)], e)
 
     return Module(list(filter(lambda x: x is not None, [eval_stmt(statement) for statement in prog.body])))
 
