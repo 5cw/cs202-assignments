@@ -1,0 +1,41 @@
+Overall structural differences:
+
+Mine still includes negation, subtraction, and an aspirational ability to process input(), but in broad strokes should produce similar results to your solution.
+
+pass rco:
+
+Similar, yours uses dictionary of mappings, mine returns a list of statements for the bindings, just doing work in different places.
+
+pass select-instructions:
+
+Similar, yours still hard-codes the print Call, I did my best to make it extensible to other calls (though the register manip may have rendered this pointless) I also broke it down into a statement nested function and an expr nested function which seems unnecessary in retrospect.
+
+pass uncover-live:
+
+I use a reads_writes function instead of separate ones for reads and writes, and a semi-global variable instead of passing the return value of the last function call, which would probably have been more efficient. Otherwise pretty similar.
+
+pass build-interference:
+
+Pretty similar, I use my reads_writes function to determine the writes, and this part of the textbook
+
+1. If instruction Ik is a move instruction of the form movq s, d, then for every
+v ∈ Lafter(k), if v != d and v != s, add the edge (d, v).
+2. For any other instruction Ik, for every d ∈ W(k) and every v ∈ Lafter(k), if v != d, add
+the edge (d, v).
+
+doesn't seem to be explicitly implemented in your solution, but I could be missing something.
+
+pass allocate-registers:
+
+did not realize there was a constants.py, whoops.
+My algorithm picks an explicitly random variable when multiple tie for highest saturation, yours picks one arbitrarily via max function.
+My algorithm assigns variables in a certain order for colorings 0-n-1 up to the n available registers, yours assigns them arbitrarily by looping through a set and assigning homes as they appear.
+My algorithm defaults to rcx, yours defaults to r12.
+
+pass patch-instructions:
+
+Very similar.
+
+pass print-x86:
+
+Very similar.

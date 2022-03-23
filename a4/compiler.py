@@ -53,7 +53,7 @@ def typecheck(program: Module) -> Module:
         'Or':  [bool, bool],
         'And':  [bool, bool],
         'Gt':   [int, int],
-        'Gte':  [int, int],
+        'GtE':  [int, int],
         'Lt':   [int, int],
         'LtE':  [int, int],
     }
@@ -66,13 +66,13 @@ def typecheck(program: Module) -> Module:
         'Or':  bool,
         'And':  bool,
         'Gt':   bool,
-        'Gte':  bool,
+        'GtE':  bool,
         'Lt':   bool,
         'LtE':  bool,
     }
 
     builtin_arg_types = {
-        'print': [int | bool],
+        'print': [int | bool], #the function is called "print_int" but the online compiler lets you print True
         #'input_int': [],
     }
 
@@ -98,10 +98,7 @@ def typecheck(program: Module) -> Module:
                             return bool
                         else:
                             raise TypeCheckError(f'Cannot compare equality of types {check_types[0]} and {check_types[1]}.')
-                    case Add():
-                        name = '+'
-                    case _:
-                        name = name_of(operator)
+                name = name_of(operator)
                 expected_types = prim_arg_types[name]
                 if check_types != expected_types:
                     raise TypeCheckError(f'{check_types[0]} and {check_types[1]} are not valid types for {name}.\n'
@@ -242,9 +239,7 @@ def rco(prog: Module) -> Module:
 
     return Module(new_prog)
 
-builtin_cif_instructions = {
-    'print': cif.Print
-}
+
 
 ##################################################
 # explicate-control
@@ -259,6 +254,10 @@ def explicate_control(prog: Module) -> cif.CProgram:
 
     # the basic blocks of the program
     basic_blocks: Dict[str, List[cif.Stmt]] = {}
+
+    builtin_cif_instructions = {
+        'print': cif.Print
+    }
 
     def explicate_expr(exp: expr) -> cif.Exp:
         match exp:
@@ -276,7 +275,7 @@ def explicate_control(prog: Module) -> cif.CProgram:
             case Compare(left, [op], [right]):
                 return cif.Compare(explicate_expr(left), op, explicate_expr(right))
             case Call(Name(name), args):
-                return builtin_cif_instructions[name](*args)
+                return builtin_cif_instructions[name](*[explicate_expr(arg) for arg in args])
             case _:
                 raise CompileError(f"unexpected token {exp}")
 
@@ -302,10 +301,13 @@ def explicate_control(prog: Module) -> cif.CProgram:
 
                 for s in if_true:
                     explicate_stmt(s, blocks, true_label)
-                for s in if_false:
-                    explicate_stmt(s, blocks, false_label)
                 blocks[true_label].append(cif.Goto(new_current))
-                blocks[false_label].append(cif.Goto(new_current))
+                if len(if_false) == 0: #if there is no else, we can jump right back to where we came from
+                    false_label = new_current
+                else:
+                    for s in if_false:
+                        explicate_stmt(s, blocks, false_label)
+                    blocks[false_label].append(cif.Goto(new_current))
                 blocks[current].append(cif.If(condition, cif.Goto(true_label), cif.Goto(false_label)))
             case _:
                 raise CompileError(f"unexpected token {statement}")
@@ -334,14 +336,63 @@ def select_instructions(p: cif.CProgram) -> x86.Program:
     op_cc = {
         'Eq': 'e',
         'Gt': 'g',
+        'GtE': 'ge',
         'Lt': 'l',
         'LtE': 'le',
     }
 
-    boolop_instrs = {
+    binop_instrs = {
         'And': 'andq',
         'Or': 'orq',
+        'Add': 'addq',
+        'Sub': 'subq'
     }
+
+    def si_atm(atm: cif.Atm) -> x86.Arg:
+        match atm:
+            case cif.Name(name):
+                return x86.Var(name)
+            case cif.ConstantInt(i) | cif.ConstantBool(i):
+                return x86.Immediate(int(i))
+
+    def si_stmt(statement: cif.Stmt) -> [x86.Instr]:
+        match statement:
+            case cif.Assign(var, exp):
+                dest = x86.Var(var)
+                def move_to_var(atm):
+                    return x86.NamedInstr("movq", [si_atm(atm), dest])
+                match exp:
+                    case cif.AtmExp(atm):
+                        return [move_to_var(atm)]
+                    case cif.UnaryOp(op, cif.AtmExp(atm)):
+                        match op:
+                            case USub():
+                                return [move_to_var(atm),
+                                        x86.NamedInstr("negq", [dest])]
+                            case Not():
+                                return [move_to_var(atm),
+                                        x86.NamedInstr("xorq", [x86.Immediate(1), dest])]
+                    case cif.BinOp(cif.AtmExp(atm1), op, cif.AtmExp(atm2)):
+                        return [move_to_var(atm1),
+                                x86.NamedInstr(binop_instrs[name_of(op)], [si_atm(atm2), dest])]
+                    case cif.Compare(cif.AtmExp(atm1), op, cif.AtmExp(atm2)):
+                        return [x86.NamedInstr("cmpq", [si_atm(atm1), si_atm(atm2)]),
+                                x86.Set(op_cc[name_of(op)], x86.ByteReg("al")),
+                                x86.NamedInstr("movzbq", [x86.ByteReg("al"), dest])]
+            case cif.If(cif.Compare(cif.AtmExp(atm1), op, cif.AtmExp(atm2)),
+                        cif.Goto(true_label), cif.Goto(false_label)):
+                return [x86.NamedInstr("cmpq", [si_atm(atm1), si_atm(atm2)]),
+                        x86.JmpIf(op_cc[name_of(op)], true_label),
+                        x86.Jmp(false_label)]
+            case cif.Goto(label):
+                return [x86.Jmp(label)]
+            case cif.Print(cif.AtmExp(atm)):
+                return [x86.NamedInstr("movq", [x86.Reg("rdi")]),
+                        x86.Callq("print_int")]
+
+
+
+
 
     pass
 
