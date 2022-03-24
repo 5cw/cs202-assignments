@@ -16,7 +16,9 @@ run_gcc = False
 if len(sys.argv) == 2 and sys.argv[1] == '--run-gcc':
     run_gcc = True
 
-for file_name in sorted(os.listdir('tests')):
+sort_by_number = lambda fn: int(fn.strip("test.py")) #so that the tests go in order of number
+
+for file_name in sorted(os.listdir('tests'), key=sort_by_number):
     if file_name.endswith('.py'):
         with open('tests/' + file_name) as f:
             print(f'Testing program {file_name}...')
@@ -27,7 +29,7 @@ for file_name in sorted(os.listdir('tests')):
                 interpreter_result = eval_Lif(ast)
                 print('interpreter result:', interpreter_result)
             
-                x86_program = run_compiler(program, logging=False)
+                x86_program = run_compiler(program, logging=True)
                 emu = eval_x86.X86Emulator(logging=False)
                 x86_output = emu.eval_program(x86_program)
 

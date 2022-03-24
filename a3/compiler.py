@@ -186,6 +186,7 @@ def select_instructions(prog: Module) -> x86.Program:
         "start": instructions
     })
 
+
 def reads_writes(instruction: x86.Instr) -> Tuple[Set[x86.Var], Set[x86.Var]]:
 
     match instruction:
