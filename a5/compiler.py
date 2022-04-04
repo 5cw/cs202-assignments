@@ -2,6 +2,7 @@ from ast import *
 
 from dataclasses import dataclass
 from collections import OrderedDict, defaultdict
+from functools import reduce
 from typing import List, Set, Dict, Tuple, DefaultDict
 import itertools
 import sys
@@ -35,6 +36,14 @@ class Begin(expr):
         self.stmts = stmts
         self.exp = exp
 
+class CompileError(Exception):
+    def __init__(self, ast):
+        super().__init__(f"Unexpected token: {print_ast(ast)}")
+
+
+class TypeCheckError(Exception):
+    pass
+
 ##################################################
 # typecheck
 ##################################################
@@ -49,29 +58,128 @@ def typecheck(program: Module) -> Module:
     """
 
     prim_arg_types = {
-        '+':   [int, int],
+        'Add': [int, int],
+        'Sub': [int, int],
+        'USub': [int],
         'Not': [bool],
-        'Or':  [bool, bool],
-        'And':  [bool, bool],
-        'Gt':   [int, int],
-        'Gte':  [int, int],
-        'Lt':   [int, int],
-        'LtE':  [int, int],
+        'Or': [bool, bool],
+        'And': [bool, bool],
+        'Gt': [int, int],
+        'GtE': [int, int],
+        'Lt': [int, int],
+        'LtE': [int, int],
     }
 
     prim_output_types = {
-        '+':   int,
+        'Add': int,
+        'Sub': int,
+        'USub': int,
         'Not': bool,
-        'Or':  bool,
-        'And':  bool,
-        'Gt':   bool,
-        'Gte':  bool,
-        'Lt':   bool,
-        'LtE':  bool,
+        'Or': bool,
+        'And': bool,
+        'Gt': bool,
+        'GtE': bool,
+        'Lt': bool,
+        'LtE': bool,
     }
 
+    builtin_arg_types = {
+        'print': [int | bool],  # the function is called "print_int" but the online compiler lets you print True
+        # 'input_int': [],
+    }
 
-    pass
+    builtin_output_types = {
+        'print': None,
+        # 'input_int': int
+    }
+
+    def tc_expr(exp: expr, env: TEnv) -> type:
+        match exp:
+            case Constant(val):
+                t = type(val)
+                if t != int and t != bool:
+                    raise TypeCheckError(f'Unexpected type "{t}".')
+                return t
+            case Name(id):
+                return env[id]
+            case BoolOp(operator, [left, right]) | BinOp(left, operator, right) | Compare(left, [operator], [right]):
+                check_types = [tc_expr(left, env), tc_expr(right, env)]
+                match operator:
+                    case Eq() | NotEq():
+                        if check_types[0] == check_types[1]:
+                            return bool
+                        else:
+                            raise TypeCheckError(
+                                f'Cannot compare equality of types {check_types[0]} and {check_types[1]}.')
+                name = name_of(operator)
+                expected_types = prim_arg_types[name]
+                if check_types != expected_types:
+                    raise TypeCheckError(f'{check_types[0]} and {check_types[1]} are not valid types for {name}.\n'
+                                         f'{name} requires types {expected_types[0]} and {expected_types[1]}.')
+                return prim_output_types[name]
+
+            case UnaryOp(operator, operand):
+                check_type = tc_expr(operand, env)
+                name = name_of(operator)
+                if check_type != prim_arg_types[name][0]:
+                    raise TypeCheckError(f'{name} cannot be applied to type {check_type}.\n'
+                                         f'{name} requires type {prim_arg_types[name][0]}')
+                return prim_output_types[name]
+
+            case Call(Name(name), args):
+                if name not in builtin_arg_types.keys():
+                    raise CompileError(f'Cannot call "{name}" because it does not exist.')
+                arg_types = [tc_expr(arg, env) for arg in args]
+                if len(arg_types) != len(builtin_arg_types) | \
+                        any([not issubclass(at, bat) for at, bat in zip(arg_types, builtin_arg_types[name])]):
+
+                    raise TypeCheckError(f'Cannot call "{name}" on type(s) {arg_types}.\n'
+                                         f'That call requires type(s) {builtin_arg_types[name]}.')
+                return builtin_output_types[name]
+
+            case _:
+                raise CompileError(exp)
+
+    def tc_stmt(statement: stmt, env):
+        match statement:
+            case Assign([Name(var)], value):
+                val_type = tc_expr(value, env)
+                if val_type is None:
+                    raise TypeCheckError(f'Cannot assign "{var}" to an operation which doesn\'t return anything')
+                if var in env.keys():
+                    if env[var] != val_type:
+                        raise TypeCheckError(f'Variable "{var}" cannot be assigned type {val_type}, '
+                                             f'it\'s already type {env[var]}')
+                else:
+                    env[var] = val_type
+
+            case If(condition, if_true, if_false):
+                if tc_expr(condition, env) != bool:
+                    raise TypeCheckError(f'If condition must be type bool.')
+                for s in if_true:
+                    tc_stmt(s, env)
+                for s in if_false:
+                    tc_stmt(s, env)
+
+            case While(condition, body, []):
+                if tc_expr(condition, env) != bool:
+                    raise TypeCheckError(f'While condition must be type bool.')
+                for s in body:
+                    tc_stmt(s, env)
+
+            case Expr(expression):
+                exp_type = tc_expr(expression, env)
+                if exp_type is not None:
+                    print(f'Warning! You have an unused expression of type "{exp_type}".')
+            case _:
+                raise CompileError(statement)
+
+    env = {}
+    for statement in program.body:
+        tc_stmt(statement, env)
+
+    return program
+
 
 
 ##################################################
@@ -86,7 +194,75 @@ def rco(prog: Module) -> Module:
     :return: An Lvar program with atomic operator arguments.
     """
 
-    pass
+    def rco_expr(exp: expr, top: bool, temps: dict[str, expr]) -> expr:
+        match exp:
+            case Constant(_) | Name(_):
+                return exp
+            case Call(Name(n), args):
+                new_args = []
+                for arg in args:
+                    new_arg = rco_expr(arg, False, temps)
+                    new_args.append(new_arg)
+                exp = Call(Name(n), new_args)
+            case UnaryOp(op, i):
+                i = rco_expr(i, False, temps)
+                exp = UnaryOp(op, i)
+            case BinOp(left, op, right) | BoolOp(op, [left, right]) | Compare(left, [op], [right]):
+                left = rco_expr(left, False, temps)
+                right = rco_expr(right, False, temps)
+                match exp:
+                    case BinOp(_):
+                        exp = BinOp(left, op, right)
+                    case BoolOp(_):
+                        exp = BoolOp(op, [left, right])
+                    case Compare(_):
+                        exp = Compare(left, [op], [right])
+            case _:
+                raise CompileError(exp)
+
+        if not top:
+            tmp = gensym("(tmp)")  # use parentheses because they are not allowed in normal variable names.
+            temps[tmp] = exp
+            exp = Name(tmp)
+        return exp
+
+    def rco_stmt(statement: stmt) -> list[stmt]:
+        temps = {}
+        match statement:
+            case Expr(exp):
+                new_stmt = Expr(rco_expr(exp, True, temps))
+            case Assign([var], exp):
+                exp = rco_expr(exp, True, temps)
+                new_stmt = Assign([var], rco_expr(exp, True, temps))
+            case If(condition, if_true, if_false):
+                new_true = []
+                new_false = []
+                for s in if_true:
+                    new_true.extend(rco_stmt(s))
+                for s in if_false:
+                    new_false.extend(rco_stmt(s))
+                new_stmt = If(rco_expr(condition, False, temps), new_true, new_false)
+            case While(condition, body, []):
+                new_body = []
+                for s in body:
+                    new_body.extend(rco_stmt(s))
+                new_stmt = While(rco_expr(condition, False, temps), new_body, [])
+            case _:
+                raise CompileError(statement)
+        new_stmts = []
+        for temp, value in temps.items():
+            new_stmts.append(Assign([Name(temp)], value))
+        new_stmts.append(new_stmt)
+        return new_stmts
+
+
+    new_prog = []
+    for statement in prog.body:
+        new_prog.extend(rco_stmt(statement))
+
+    return Module(new_prog)
+
+
 
 
 ##################################################
@@ -103,13 +279,94 @@ def explicate_control(prog: Module) -> cif.CProgram:
     # the basic blocks of the program
     basic_blocks: Dict[str, List[cif.Stmt]] = {}
 
-    def add_stmt(label: str, s: stmt):
+    def add_stmt(label: str, s: cif.Stmt):
         if label not in basic_blocks:
             basic_blocks[label] = []
 
         basic_blocks[label].append(s)
 
-    pass
+
+    # the basic blocks of the program
+    basic_blocks: Dict[str, List[cif.Stmt]] = {}
+
+    builtin_cif_instructions = {
+        'print': cif.Print
+    }
+
+    def explicate_expr(exp: expr) -> cif.Exp:
+        match exp:
+            case Name(name):
+                return cif.AtmExp(cif.Name(name))
+            case Constant(val):
+                if type(val) == int:
+                    return cif.AtmExp(cif.ConstantInt(val))
+                else:
+                    return cif.AtmExp(cif.ConstantBool(val))
+            case UnaryOp(op, operand):
+                return cif.UnaryOp(op, explicate_expr(operand))
+            case BinOp(left, op, right) | BoolOp(op, [left, right]):
+                return cif.BinOp(explicate_expr(left), op, explicate_expr(right))
+            case Compare(left, [op], [right]):
+                return cif.Compare(explicate_expr(left), op, explicate_expr(right))
+            case _:
+                raise CompileError(exp)
+
+    def explicate_stmt(statement: stmt, blocks: Dict[str, List[cif.Stmt]], current: str) -> str:
+        new_current = current
+        match statement:
+            case Expr(Call(Name(name), args)):
+                call = builtin_cif_instructions[name](*[explicate_expr(arg) for arg in args])
+                add_stmt(current, call)
+            case Assign([var], exp):
+                add_stmt(current, cif.Assign(var, explicate_expr(exp)))
+            case If(condition, if_true, if_false):
+                match condition:
+                    case Constant(_) | Name(_):
+                        condition = cif.Compare(explicate_expr(condition), Eq(),
+                                                cif.AtmExp(cif.ConstantBool(True)))
+                    case Compare(left, [op], [right]):
+                        condition = cif.Compare(explicate_expr(left), op, explicate_expr(right))
+                    case _:
+                        raise CompileError(condition)
+                true_label = gensym("label")
+                false_label = gensym("label")
+                new_current = gensym("label")
+
+                explicate_block(if_true, blocks, true_label, new_current)
+                if len(if_false) == 0:  # if there is no else, we can jump right back to where we came from
+                    false_label = new_current
+                else:
+                    explicate_block(if_false, blocks, false_label, new_current)
+                add_stmt(current, cif.If(condition, cif.Goto(true_label), cif.Goto(false_label)))
+            case While(condition, body, []):
+                match condition:
+                    case Constant(_) | Name(_):
+                        condition = cif.Compare(explicate_expr(condition), Eq(),
+                                                cif.AtmExp(cif.ConstantBool(True)))
+                    case Compare(left, [op], [right]):
+                        condition = cif.Compare(explicate_expr(left), op, explicate_expr(right))
+                    case _:
+                        raise CompileError(condition)
+                check_label = gensym("label")
+                body_label = gensym("label")
+                new_current = gensym("label")
+                explicate_block(body, blocks, body_label, check_label)
+                add_stmt(current, cif.Goto(check_label))
+                add_stmt(check_label, cif.If(condition, cif.Goto(body_label), cif.Goto(new_current)))
+            case _:
+                raise CompileError(statement)
+        return new_current
+
+    def explicate_block(statements: [stmt], blocks, start, end):
+        current_label = start
+        for statement in statements:
+            current_label = explicate_stmt(statement, blocks, current_label)
+        blocks[current_label].append(cif.Goto(end))
+
+    explicate_block(prog.body, basic_blocks, "start", "conclusion")
+
+    return cif.CProgram(basic_blocks)
+
 
 
 ##################################################
@@ -126,21 +383,101 @@ def select_instructions(p: cif.CProgram) -> x86.Program:
     op_cc = {
         'Eq': 'e',
         'Gt': 'g',
+        'GtE': 'ge',
         'Lt': 'l',
         'LtE': 'le',
     }
 
     binop_instrs = {
+        'And': 'andq',
+        'Or': 'orq',
         'Add': 'addq',
-        'Sub': 'subq',
-        'Mult': 'imulq',
-        'And': 'andq',
-        'Or': 'orq',
-        'And': 'andq',
-        'Or': 'orq',
+        'Sub': 'subq'
     }
 
-    pass
+    def si_atm(atm: cif.Atm) -> x86.Arg:
+        match atm:
+            case cif.Name(name):
+                return x86.Var(name)
+            case cif.ConstantInt(i) | cif.ConstantBool(i):
+                return x86.Immediate(int(i))
+            case _:
+                raise CompileError(atm)
+
+    def si_stmt(statement: cif.Stmt) -> [x86.Instr]:
+        match statement:
+            case cif.Assign(Name(var), exp):
+                dest = x86.Var(var)
+
+                def move_to_var(atm):
+                    return x86.NamedInstr("movq", [si_atm(atm), dest])
+
+                match exp:
+                    case cif.AtmExp(atm):
+                        return [move_to_var(atm)]
+                    case cif.UnaryOp(op, cif.AtmExp(atm)):
+                        match op:
+                            case USub():
+                                return [move_to_var(atm),
+                                        x86.NamedInstr("negq", [dest])]
+                            case Not():
+                                return [move_to_var(atm),
+                                        x86.NamedInstr("xorq", [x86.Immediate(1), dest])]
+                    case cif.BinOp(cif.AtmExp(atm1), op, cif.AtmExp(atm2)):
+                        return [move_to_var(atm1),
+                                x86.NamedInstr(binop_instrs[name_of(op)], [si_atm(atm2), dest])]
+                    case cif.Compare(cif.AtmExp(atm1), op, cif.AtmExp(atm2)):
+                        return [x86.NamedInstr("cmpq", [si_atm(atm1), si_atm(atm2)]),
+                                x86.Set(op_cc[name_of(op)], x86.ByteReg("al")),
+                                x86.NamedInstr("movzbq", [x86.ByteReg("al"), dest])]
+            case cif.If(cif.Compare(cif.AtmExp(atm1), op, cif.AtmExp(atm2)),
+                        cif.Goto(true_label), cif.Goto(false_label)):
+                return [x86.NamedInstr("cmpq", [si_atm(atm1), si_atm(atm2)]),
+                        x86.JmpIf(op_cc[name_of(op)], true_label),
+                        x86.Jmp(false_label)]
+            case cif.Goto(label):
+                return [x86.Jmp(label)]
+            case cif.Print(cif.AtmExp(atm)):
+                return [x86.NamedInstr("movq", [si_atm(atm), x86.Reg("rdi")]),
+                        x86.Callq("print_int")]
+            case _:
+                raise CompileError(statement)
+
+    return x86.Program({
+        label: reduce(
+            lambda l1, l2: l1 + l2,
+            [si_stmt(statement) for statement in block]
+        ) for label, block in p.blocks.items()
+    })
+
+
+def reads_writes(instruction: x86.Instr) -> Tuple[Set[x86.Var], Set[x86.Var]]:
+    match instruction:
+        case x86.NamedInstr("movq", [read, write]):
+            reads, writes = {read}, {write}
+        case x86.NamedInstr("addq" | "subq" | "andq" | "orq" | "xorq", [read, readwrite]):
+            reads, writes = {read, readwrite}, {readwrite}
+        case x86.NamedInstr("cmpq", [read, read2]):
+            reads, writes = {read, read2}, set()
+        case x86.NamedInstr("negq", [readwrite]):
+            reads, writes = {readwrite}, {readwrite}
+        case x86.NamedInstr("pushq", [read]):
+            reads, writes = {read}, set()
+        case x86.NamedInstr("popq", [write]) | x86.NamedInstr("movzbq", [_, write]):
+            reads, writes = set(), {write}
+        case _:
+            reads, writes = set(), set()
+
+    def is_var(arg: x86.Arg) -> bool:
+        match arg:
+            case x86.Var(_):
+                return True
+            case _:
+                return False
+
+    return {read for read in reads if is_var(read)}, \
+           {write for write in writes if is_var(write)}
+
 
 
 ##################################################

@@ -1,0 +1,54 @@
+Overall structural differences:
+My code allows for Sub and USub, and optimizes some control flow and attempts to optimize other parts.
+overall, very similar.
+
+
+pass typecheck:
+
+I extended prim_arg_types and prim_output_types to include more than the instructor, and used a lookup table for function calls,
+and raised an error with a message instead of using assert.
+Pretty similar.
+
+pass rco:
+
+I tried to get clever with match and combined some cases,
+my solution of creating the assign statements in rco_exp instead of rco_stmt is getting annoying.
+Pretty similar.
+
+pass explicate_control:
+
+I broke up into explicate_block and explicate_stmt, explicate_stmt feels unnecessary in retrospect,
+I put in some code to optimize compare statements for ifs, but I'm realizing the check does nothing.
+I did use the cif ast types more correctly.
+Very similar.
+
+pass select_instructions:
+
+I lumped all my checks for assign statements together.
+Very similar.
+
+pass uncover_live:
+
+I implemented topological sort where you just calculated what you needed when you needed it, which is much simpler,
+and more intuitive.
+
+Other than that, pretty similar.
+
+pass build_interference:
+
+my code reuses reads_writes function for a job that doesn't necessarily need that. little messy but
+very similar.
+
+pass allocate_registers:
+
+my code for building the coloring is a little sloppier,
+very similar.
+
+pass patch_instructions:
+
+I added some code for removing redundnant blocks, the loop is hacky, other than that,
+very similar.
+
+pass print_x86:
+
+very similar
