@@ -1,4 +1,5 @@
 import ast
+import random
 from ast import *
 
 from dataclasses import dataclass
@@ -15,8 +16,11 @@ import cs202_support.x86exp as x86
 import ctup
 import constants
 
-TUPLE_REG = "r11"
-TOP_OF_STACK = "r15"
+argument_registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+
+TUPLE_REG = x86.Reg("r11")
+TOP_OF_STACK = x86.Reg("r15")
+MAX_ELEMENTS = 50
 
 gensym_num = 0
 
@@ -83,8 +87,10 @@ class CompileError(Exception):
 class TypeCheckError(Exception):
     pass
 
+
 class UnassignedVariable:
     pass
+
 
 # Assigns e the type t and returns e
 def with_type(t, e):
@@ -200,6 +206,8 @@ def typecheck(program: Module) -> Module:
                 return builtin_output_types[name]
 
             case Tuple(elements):
+                if len(elements) > MAX_ELEMENTS:
+                    raise TypeCheckError(f'Tuple cannot have more than {MAX_ELEMENTS} elements.')
                 exp.has_type = tuple[tuple(tc_expr(e, env) for e in elements)]
                 return exp.has_type
 
@@ -225,7 +233,8 @@ def typecheck(program: Module) -> Module:
                 lhs_type = tc_expr(lhs, env)
                 val_type = tc_expr(value, env)
                 if val_type is None:
-                    raise TypeCheckError(f'Cannot assign "{print_indices(lhs)}" to an operation which doesn\'t return anything')
+                    raise TypeCheckError(
+                        f'Cannot assign "{print_indices(lhs)}" to an operation which doesn\'t return anything')
 
                 if lhs_type == UnassignedVariable:
                     match lhs:
@@ -235,9 +244,7 @@ def typecheck(program: Module) -> Module:
                             CompileError(lhs)
                 elif lhs_type != val_type:
                     raise TypeCheckError(f'Variable "{print_indices(lhs)}" cannot be assigned type {val_type}, '
-                                             f'it\'s already type {lhs_type}')
-
-
+                                         f'it\'s already type {lhs_type}')
 
             case If(condition, if_true, if_false):
                 if tc_expr(condition, env) != bool:
@@ -329,7 +336,11 @@ def rco(prog: Module) -> Module:
                 new_stmt = Expr(rco_expr(exp, True, temps))
             case Assign([var], exp):
                 exp = rco_expr(exp, True, temps)
-                new_stmt = Assign([rco_expr(var, True, temps)], rco_expr(exp, True, temps))
+                exp_can_operate = True
+                match var, exp:
+                    case Subscript(_, _), Subscript(_, _):
+                        exp_can_operate = False
+                new_stmt = Assign([rco_expr(var, True, temps)], rco_expr(exp, exp_can_operate, temps))
             case If(condition, if_true, if_false):
                 new_true = []
                 new_false = []
@@ -407,6 +418,10 @@ def expose_alloc(prog: Module) -> Module:
                 )]
             case _:
                 return [statement]
+
+    return Module(
+        reduce(lambda x, y: x + y, [ea_stmt(statement) for statement in prog.body])
+    )
 
 
 ##################################################
@@ -580,8 +595,8 @@ def select_instructions(p: ctup.CProgram) -> x86.Program:
 
         match exp:
             case ctup.AtmExp(Subscript(name, index)):
-                return [x86.NamedInstr("movq", [x86.VecVar(name), x86.Reg(TUPLE_REG)]),
-                        x86.NamedInstr("movq", [x86.Deref(TUPLE_REG, index * 8), dest])]
+                return [x86.NamedInstr("movq", [x86.VecVar(name), TUPLE_REG]),
+                        x86.NamedInstr("movq", [x86.Deref(TUPLE_REG.val, index * 8), dest])]
             case ctup.AtmExp(atm):
                 return [move_to_var(atm)]
             case ctup.UnaryOp(op, ctup.AtmExp(atm)):
@@ -605,8 +620,24 @@ def select_instructions(p: ctup.CProgram) -> x86.Program:
                         dest = x86.VecVar(name)
                     case _:
                         raise CompileError(dest)
+
+                def tag_from(tt: type):
+                    types = get_args(tt)
+                    pointer_mask = 0
+                    vector_length = len(types)
+                    for t in types:
+                        if get_origin(t) == tuple:
+                            pointer_mask += 1
+                        pointer_mask = pointer_mask << 1
+                    return (pointer_mask << 7) + (vector_length << 1) + 1
+
                 return [x86.NamedInstr("movq", [x86.GlobalVal("free_ptr"), dest]),
-                        x86.NamedInstr("addq", [x86.Immediate(num_bytes), x86.GlobalVal("free_ptr")])]
+                        x86.NamedInstr("addq", [x86.Immediate(num_bytes), x86.GlobalVal("free_ptr")]),
+                        x86.NamedInstr("movq", [dest, TUPLE_REG]),
+                        x86.NamedInstr("movq", [tag_from(tuple_type), x86.Deref(TUPLE_REG.val, 0)])]
+            case ctup.Subscript(name, index):
+                return [x86.NamedInstr("movq", [x86.VecVar(name), TUPLE_REG]),
+                        x86.NamedInstr("movq", [x86.Deref(TUPLE_REG.val, (index * 8) + 1), x86.VecVar(name)])]
 
     def si_stmt(statement: ctup.Stmt) -> [x86.Instr]:
         match statement:
@@ -614,8 +645,8 @@ def select_instructions(p: ctup.CProgram) -> x86.Program:
                 match lhs:
                     case ctup.Subscript(name, index):
                         return [
-                                   x86.NamedInstr("movq", [x86.VecVar(name), x86.Reg(TUPLE_REG)])
-                               ] + si_exp(exp, x86.Deref(TUPLE_REG, index * 8))
+                                   x86.NamedInstr("movq", [x86.VecVar(name), TUPLE_REG])
+                               ] + si_exp(exp, x86.Deref(TUPLE_REG.val, (index * 8) + 1))
                     case var:
                         return si_exp(exp, x86.Var(var))
 
@@ -627,11 +658,11 @@ def select_instructions(p: ctup.CProgram) -> x86.Program:
             case ctup.Goto(label):
                 return [x86.Jmp(label)]
             case ctup.Print(ctup.AtmExp(atm)):
-                return [x86.NamedInstr("movq", [si_atm(atm), x86.Reg("rdi")]),
+                return [x86.NamedInstr("movq", [si_atm(atm), x86.Reg(argument_registers[0])]),
                         x86.Callq("print_int")]
             case ctup.Collect(num_bytes):
-                return [x86.NamedInstr("movq", [x86.Reg(TOP_OF_STACK), x86.Reg("rdi")]),
-                        x86.NamedInstr("movq", [x86.Immediate(num_bytes), x86.Reg("rsi")]),
+                return [x86.NamedInstr("movq", [TOP_OF_STACK, x86.Reg(argument_registers[0])]),
+                        x86.NamedInstr("movq", [x86.Immediate(num_bytes), x86.Reg(argument_registers[1])]),
                         x86.Callq("collect")]
             case _:
                 raise CompileError(statement)
@@ -645,6 +676,10 @@ def select_instructions(p: ctup.CProgram) -> x86.Program:
 
 
 def reads_writes(instruction: x86.Instr) -> tuple[Set[x86.Var], Set[x86.Var]]:
+    num_args = {
+        "print_int": 1,
+        "collect": 2
+    }
     match instruction:
         case x86.NamedInstr("movq", [read, write]):
             reads, writes = {read}, {write}
@@ -658,18 +693,16 @@ def reads_writes(instruction: x86.Instr) -> tuple[Set[x86.Var], Set[x86.Var]]:
             reads, writes = {read}, set()
         case x86.NamedInstr("popq", [write]) | x86.NamedInstr("movzbq", [_, write]):
             reads, writes = set(), {write}
+        case x86.Callq(name):
+            reads, writes = set(argument_registers[:num_args[name]]), set(constants.caller_saved_registers)
         case _:
             reads, writes = set(), set()
 
-    def is_var(arg: x86.Arg) -> bool:
-        match arg:
-            case x86.Var(_) | x86.VecVar(_):
-                return True
-            case _:
-                return False
+    return reads, writes
 
-    return {read for read in reads if is_var(read)}, \
-           {write for write in writes if is_var(write)}
+
+graph_forward = {}
+graph_backward = {}
 
 
 ##################################################
@@ -691,9 +724,6 @@ def uncover_live(program: x86.Program) -> TupleType[x86.Program, Dict[str, List[
 
     live_before_per_block = {}
 
-    graph_forward = {}
-    graph_backward = {}
-
     def ul_instr(instruction: x86.Instr, before) -> Set[x86.Var]:
         reads, writes = reads_writes(instruction)
         before.difference_update(writes)
@@ -706,7 +736,7 @@ def uncover_live(program: x86.Program) -> TupleType[x86.Program, Dict[str, List[
             live_after.insert(0, input)
             input = ul_instr(instruction, input)
         for from_label in graph_backward[label]:
-            live_before_per_block[label] = input.copy()
+            live_before_per_block[from_label] = input.copy()
         return live_after
 
     def populate_graphs(blocks):
@@ -803,10 +833,37 @@ def build_interference(inputs: TupleType[x86.Program, Dict[str, List[Set[x86.Var
     second is a completed interference graph.
     """
 
-    caller_saved_registers = [x86.Reg(r) for r in constants.caller_saved_registers]
-    callee_saved_registers = [x86.Reg(r) for r in constants.callee_saved_registers]
+    graph = InterferenceGraph()
 
-    pass
+    def bi_instr(instruction: x86.Instr, live_after: Set[x86.Var]):
+        match instruction:
+            case x86.NamedInstr("movq", [source, x86.Var(dest_name)]):
+                for live in live_after:
+                    if live != source and live != x86.Var(dest_name):
+                        graph.add_edge(x86.Var(dest_name), live)
+            case _:
+                collect = False
+                match instruction:
+                    case x86.Callq("collect"):
+                        collect = True
+                _, writes = reads_writes(instruction)
+                for live in live_after:
+                    for write in writes:
+                        if write != live:
+                            graph.add_edge(write, live)
+                    if collect:
+                        for callee in constants.callee_saved_registers:
+                            graph.add_edge(callee, live)
+
+    def bi_block(instructions: [x86.Instr], live_after_sets: [Set[x86.Var]]):
+        for instruction, live_after in zip(instructions, live_after_sets):
+            bi_instr(instruction, live_after)
+
+    match inputs:
+        case x86.Program(blocks), live_dict:
+            for key in blocks.keys():
+                bi_block(blocks[key], live_dict[key])
+            return x86.Program(blocks), graph
 
 
 ##################################################
@@ -814,8 +871,9 @@ def build_interference(inputs: TupleType[x86.Program, Dict[str, List[Set[x86.Var
 ##################################################
 
 Color = int
-Coloring = Dict[x86.Var, Color]
-Saturation = Set[Color]
+Coloring = dict[x86.Var, Color]
+Saturation = set[Color]
+SatMap = dict[x86.Arg, Saturation]
 
 
 def allocate_registers(inputs: TupleType[x86.Program, InterferenceGraph]) -> \
@@ -835,7 +893,81 @@ def allocate_registers(inputs: TupleType[x86.Program, InterferenceGraph]) -> \
     register_locations = [x86.Reg(r) for r in
                           constants.caller_saved_registers + constants.callee_saved_registers]
 
-    pass
+    def ar_select(sat: SatMap) -> x86.Arg:
+        max = 0
+        possible = []
+        for var, s in sat.items():
+            if var not in coloring.keys():
+                if len(s) > max:
+                    possible = [var]
+                    max = len(s)
+                elif len(s) == max:
+                    possible.append(var)
+        return random.choice(possible)
+
+    num_colors = 0
+    prog, interference = inputs
+    saturation_map = SatMap()
+    coloring = Coloring()
+    register_order = []
+    for var in interference.graph.keys():
+        saturation_map[var] = Saturation()
+        match var:
+            case x86.Reg(_):
+                color = num_colors
+                num_colors += 1
+                coloring[var] = color
+                register_order.append(var)
+                for neighbor in interference.neighbors(var):
+                    saturation_map[neighbor].add(color)
+
+    while len(interference.graph) > len(coloring):
+        var = ar_select(saturation_map)
+        if len(saturation_map[var]) >= num_colors:
+            color = num_colors
+            num_colors += 1
+        else:
+            color = min(set(range(num_colors)) - saturation_map[var])
+        coloring[var] = color
+        for neighbor in interference.neighbors(var):
+            saturation_map[neighbor].add(color)
+
+    mapping: list[x86.Arg] = register_order.copy()
+    mapping.extend([reg for reg in register_locations if reg not in register_order])
+
+
+    if len(register_order) > num_colors:
+        stack_size = 0
+    else:
+        num_vars = num_colors - len(register_order)
+        extension = [x86.Deref("rbp", -(8 * i)) for i in range(1, num_vars + 1)]
+        stack_size = num_vars * 8
+        stack_size = stack_size if stack_size % 16 == 0 else stack_size + 8
+        mapping.extend(extension)
+
+    def ar_arg(arg: x86.Arg) -> x86.Arg:
+        match arg:
+            case x86.Var(_):
+                if arg not in coloring.keys():
+                    return mapping[0]
+                return mapping[coloring[arg]]
+            case _:
+                return arg
+
+    def ar_instr(instruction: x86.Instr) -> x86.Instr:
+        print_ast(instruction)
+        match instruction:
+            case x86.NamedInstr(name, args):
+                return x86.NamedInstr(name, [ar_arg(arg) for arg in args])
+            case _:
+                return instruction
+
+    def ar_block(block: list[x86.Instr]) -> list[x86.Instr]:
+        return [ar_instr(instruction) for instruction in block]
+
+    return x86.Program({
+        key: ar_block(block) for key, block in prog.blocks.items()
+    }), stack_size
 
 
 ##################################################
@@ -850,8 +982,68 @@ def patch_instructions(inputs: TupleType[x86.Program, int, int]) -> TupleType[x8
     :return: A Tuple. The first element is the patched x86 program. The second element is
     the stack space in bytes. The third element is the root stack space in bytes.
     """
+    empty_labels = {}
+    label_joins = {}
 
-    pass
+    def patch_instruction(instruction: x86.Instr) -> [x86.Instr]:
+        match instruction:
+            case x86.NamedInstr("movq", [loc1, loc2]) if loc1 == loc2:
+                return []
+            case x86.NamedInstr(name, [x86.Deref(reg1, off1), x86.Deref(reg2, off2)]):
+                return [
+                    x86.NamedInstr("movq", [x86.Deref(reg1, off1), x86.Reg("rax")]),
+                    x86.NamedInstr(name, [x86.Reg("rax"), x86.Deref(reg2, off2)])
+                ]
+            case x86.NamedInstr("cmpq", [x86.Immediate(i1), x86.Immediate(i2)]):
+                return [
+                    x86.NamedInstr("movq", [x86.Immediate(i1), x86.Reg("rax")]),
+                    x86.NamedInstr("cmpq", [x86.Immediate(i2), x86.Reg("rax")])
+                ]
+            case x86.Jmp(label):
+                if label in empty_labels.keys():
+                    return [x86.Jmp(empty_labels[label])]
+            case x86.JmpIf(cc, label):
+                if label in empty_labels.keys():
+                    return [x86.JmpIf(cc, empty_labels[label])]
+
+        return [instruction]
+
+    def patch_block(block: [x86.Instr]):
+        new_block = []
+        for instruction in block:
+            new_block.extend(patch_instruction(instruction))
+        return new_block
+
+    match inputs[0]:
+        case x86.Program(blocks):
+            pass
+        case _:
+            raise CompileError(inputs[0])
+
+    def patch_labels():
+        empty_labels.clear()
+        for label, block in blocks.items():
+            if len(block) == 1:
+                match block[0]:
+                    case x86.Jmp(next_label):
+                        empty_labels[label] = next_label
+
+        for label in empty_labels.keys():
+            next_label = empty_labels[label]
+            while next_label in empty_labels.keys():
+                next_label = empty_labels[next_label]
+            empty_labels[label] = next_label
+            del blocks[label]
+
+    while True:
+        patch_labels()
+        blocks = {
+            key: patch_block(block) for key, block in blocks.items()
+        }
+        if len(empty_labels) == 0:
+            break
+
+    return x86.Program(blocks), inputs[1]
 
 
 ##################################################
