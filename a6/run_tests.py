@@ -15,7 +15,7 @@ from cs202_support import eval_x86
 run_gcc = False
 if len(sys.argv) == 2 and sys.argv[1] == '--run-gcc':
     run_gcc = True
-
+error = False
 for file_name in sorted(os.listdir('tests')):
     if file_name.endswith('.py'):
         with open('tests/' + file_name) as f:
@@ -27,7 +27,7 @@ for file_name in sorted(os.listdir('tests')):
                 interpreter_result = eval_Lif(ast)
                 print('interpreter result:', interpreter_result)
             
-                x86_program = run_compiler(program, logging=False)
+                x86_program =  run_compiler(program, logging=False)
                 emu = eval_x86.X86Emulator(logging=False)
                 x86_output = emu.eval_program(x86_program)
 
@@ -68,3 +68,4 @@ for file_name in sorted(os.listdir('tests')):
             except:
                 print('Test failed with error! **************************************************')
                 traceback.print_exception(*sys.exc_info())
+                error = True

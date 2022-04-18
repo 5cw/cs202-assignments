@@ -172,7 +172,7 @@ class X86Emulator:
 
     def eval_instrs(self, instrs, blocks, output):
         for instr in instrs:
-            #log('Evaluating instruction:', instr.pretty())
+            #print('Evaluating instruction:', instr.pretty())
             if instr.data == 'pushq':
                 a = instr.children[0]
                 self.registers['rsp'] = self.registers['rsp'] - 8
