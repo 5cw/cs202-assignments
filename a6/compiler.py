@@ -997,7 +997,7 @@ def allocate_registers(inputs: TupleType[x86.Program, InterferenceGraph]) -> \
         stack_size = stack_size if stack_size % 16 == 0 else stack_size + 8
         mapping.extend(extension)
 
-    vec_stack_size = ((num_vec_colors - 1) * 8)
+    vec_stack_size = (num_vec_colors * 8)
 
     if num_vec_colors > 0:
         extension = [x86.Deref(TOP_OF_STACK.val, -(8 * i)) for i in range(num_vec_colors)]
