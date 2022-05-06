@@ -12,7 +12,7 @@ from cs202_support import eval_x86
 # Pass the --run-gcc option to this file to run your compiled files in hardware
 # You must compile the runtime first and place it in the parent directory
 
-run_gcc = False
+run_gcc = True
 if len(sys.argv) == 2 and sys.argv[1] == '--run-gcc':
     run_gcc = True
 error = False
@@ -40,16 +40,18 @@ for file_name in sorted(os.listdir('tests')):
 
                 if run_gcc:
                     asm_file_name = 'tests/' + file_name + '.s'
+                    bin_file_name = 'tests/' + file_name + ".out"
                     with open(asm_file_name, 'w') as output_file:
                         output_file.write(x86_program)
                     
                     # run gcc to compile the binary
-                    gcc_result = subprocess.run(["gcc", "-g", "../runtime.o", asm_file_name],
+                    subprocess.run(["gcc", "-c", "../runtime.c"])
+                    gcc_result = subprocess.run(["gcc", "-g", "../runtime.o", asm_file_name, "-o", bin_file_name],
                                                 text=True, capture_output=True)
                     print('GCC output:', gcc_result.stdout)
 
                     # run the binary
-                    binary_result = subprocess.run(["./a.out"], text=True, capture_output=True)
+                    binary_result = subprocess.run([f"./{bin_file_name}"], text=True, capture_output=True)
                     print('Binary output:', binary_result.stdout)
 
                     interpreter_result_str = '\n'.join([str(int(i)) for i in interpreter_result]) + '\n'
@@ -60,8 +62,8 @@ for file_name in sorted(os.listdir('tests')):
                         print('Interpreter result:', interpreter_result)
                         print('Binary x86 result:', binary_result.stdout)
 
-                    os.remove(asm_file_name)
-                    os.remove('a.out')
+                    #os.remove(asm_file_name)
+                    #os.remove('a.out')
 
                 print()
 

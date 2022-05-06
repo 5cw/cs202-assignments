@@ -15,7 +15,7 @@ class Arg(AST):
 
 @dataclass(frozen=True, eq=True)
 class Immediate(Arg):
-    val: int
+    val: str | int
 
 @dataclass(frozen=True, eq=True)
 class Reg(Arg):
@@ -85,9 +85,14 @@ class Set(Instr):
     e1: Arg
 
 @dataclass(frozen=True, eq=True)
+class Rep(Instr):
+    instr: Instr
+
+@dataclass(frozen=True, eq=True)
 class Retq(Instr):
     pass
 
 @dataclass(frozen=True, eq=True)
 class Program(AST):
     blocks: Dict[str, List[Instr]]
+    data: dict[str, str]

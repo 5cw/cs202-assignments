@@ -216,6 +216,8 @@ void collect(int64_t** rootstack_ptr, uint64_t bytes_requested)
     tospace_end = tospace_begin + new_bytes / (sizeof(int64_t));
   }
 
+  printf("free_ptr: %p, fromspace_end: %p", free_ptr, fromspace_end);
+
   assert(free_ptr < fromspace_end);
   assert(free_ptr >= fromspace_begin);
 #ifndef NDEBUG
@@ -275,7 +277,7 @@ static void copy_vector(int64_t** vector_ptr_loc);
   copies. (See the description of copy_vector below).
 
   While this initial copying of root vectors is occuring the free_ptr
-  has been maintained to remain at the next free memory location in
+  has been ctained to remain at the next free memory location in
   tospace. Cheney's algorithm then scans a vector at a time until it
   reaches the free_ptr.
 
@@ -516,6 +518,11 @@ void print_bool(int64_t x) {
   } else {
     printf("#f");
   }
+}
+
+void print_str(int64_t x) {
+    str = ((char*) x) + 1
+    printf(str)
 }
 
 void print_void() {

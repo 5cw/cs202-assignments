@@ -28,6 +28,11 @@ class Subscript(Atm):
     var: str
     offset: int
 
+@dataclass(eq=True)
+class CharAt(Atm):
+    var: str
+    offset: int
+
 ##################################################
 @dataclass(eq=True)
 class Exp(AST):
@@ -67,6 +72,7 @@ class Stmt(AST):
 @dataclass(eq=True)
 class Print(Stmt):
     exp: Exp
+    print_type: type
 
 @dataclass(eq=True)
 class Collect(Stmt):
@@ -74,8 +80,13 @@ class Collect(Stmt):
 
 @dataclass(eq=True)
 class Assign(Stmt):
-    var: str
+    var: Atm
     exp: Exp
+
+@dataclass(eq=True)
+class AssignString(Stmt):
+    var: Atm
+    data_index: int
 
 @dataclass(eq=True)
 class Return(Stmt):
@@ -95,3 +106,4 @@ class If(Stmt):
 @dataclass(eq=True)
 class CProgram(AST):
     blocks: Dict[str, List[Stmt]]
+    data: list[str]
