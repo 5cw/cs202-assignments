@@ -16,7 +16,7 @@ run_gcc = True
 if len(sys.argv) == 2 and sys.argv[1] == '--run-gcc':
     run_gcc = True
 error = False
-for file_name in sorted(os.listdir('tests')):
+for file_name in ["test1.py"]:#sorted(os.listdir('tests')):
     if file_name.endswith('.py'):
         with open('tests/' + file_name) as f:
             print(f'Testing program {file_name}...')
@@ -24,20 +24,21 @@ for file_name in sorted(os.listdir('tests')):
             try:
                 program = f.read()
                 ast = parse(program)
-                interpreter_result = eval_Lif(ast)
-                print('interpreter result:', interpreter_result)
-            
-                x86_program =  run_compiler(program, logging=False)
-                emu = eval_x86.X86Emulator(logging=False)
-                x86_output = emu.eval_program(x86_program)
 
+
+                ##print('interpreter result:', interpreter_result)
+            
+                x86_program =  run_compiler(program, logging=True)
+                #emu = eval_x86.X86Emulator(logging=False)
+                #x86_output = emu.eval_program(x86_program)
+                """
                 if x86_output == interpreter_result:
                     print('Test passed')
                 else:
                     print('Test failed! **************************************************')
                     print('Interpreter result:', interpreter_result)
                     print('Compiled x86 result:', x86_output)
-
+"""
                 if run_gcc:
                     asm_file_name = 'tests/' + file_name + '.s'
                     bin_file_name = 'tests/' + file_name + ".out"
@@ -45,15 +46,15 @@ for file_name in sorted(os.listdir('tests')):
                         output_file.write(x86_program)
                     
                     # run gcc to compile the binary
-                    subprocess.run(["gcc", "-c", "../runtime.c"])
+                    subprocess.run(["gcc", "-c", "../runtime.c", "-o", "../runtime.o"])
                     gcc_result = subprocess.run(["gcc", "-g", "../runtime.o", asm_file_name, "-o", bin_file_name],
                                                 text=True, capture_output=True)
-                    print('GCC output:', gcc_result.stdout)
+                    print('GCC output:', gcc_result.stderr)
 
                     # run the binary
                     binary_result = subprocess.run([f"./{bin_file_name}"], text=True, capture_output=True)
                     print('Binary output:', binary_result.stdout)
-
+                    """
                     interpreter_result_str = '\n'.join([str(int(i)) for i in interpreter_result]) + '\n'
                     if binary_result.stdout == interpreter_result_str:
                         print('Binary test passed')
@@ -61,7 +62,7 @@ for file_name in sorted(os.listdir('tests')):
                         print('Binary test failed! ************************************************')
                         print('Interpreter result:', interpreter_result)
                         print('Binary x86 result:', binary_result.stdout)
-
+"""
                     #os.remove(asm_file_name)
                     #os.remove('a.out')
 

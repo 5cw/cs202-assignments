@@ -520,9 +520,9 @@ void print_bool(int64_t x) {
   }
 }
 
-void print_str(int64_t x) {
-    str = ((char*) x) + 1
-    printf(str)
+void print_FixedStr(int64_t x) {
+    char* str = ((char*) (x + 8));
+    printf("%s\n", str);
 }
 
 void print_void() {

@@ -82,9 +82,12 @@ class Collect(expr):
     def __init__(self, num_bytes):
         self.num_bytes = num_bytes
 
+
+
 class CompileError(Exception):
     def __init__(self, ast):
         super().__init__(f"Unexpected token: {print_ast(ast)}")
+
 
 
 class TypeCheckError(Exception):
@@ -109,6 +112,7 @@ TEnv = Dict[str, type]
 
 class FixedStr(tuple): #simpler than figuring out how to properly implement parameterized generics
     pass
+
 
 
 def typecheck(program: Module) -> Module:
@@ -214,6 +218,7 @@ def typecheck(program: Module) -> Module:
                 if name not in builtin_arg_types.keys():
                     raise CompileError(f'Cannot call "{name}" because it does not exist.')
                 arg_types = [tc_expr(arg, env) for arg in args]
+                arg_types = [get_origin(arg) or arg for arg in arg_types]
                 if len(arg_types) != len(builtin_arg_types) | \
                         any([not issubclass(at, bat) for at, bat in zip(arg_types, builtin_arg_types[name])]):
                     raise TypeCheckError(f'Cannot call "{name}" on type(s) {arg_types}.\n'
@@ -264,6 +269,7 @@ def typecheck(program: Module) -> Module:
                     match lhs:
                         case Name(name):
                             env[name] = val_type
+                            lhs.has_type = val_type
                         case _:
                             CompileError(lhs)
                 elif lhs_type != val_type:
@@ -311,15 +317,21 @@ def rco(prog: Module) -> Module:
     """
 
     def rco_expr(exp: expr, top: bool, temps: dict[str, expr]) -> expr:
-        has_type = exp.has_type
-        exp = rco_expr_(exp, top, temps)
-        exp.has_type = has_type
-        return exp
-
-    def rco_expr_(exp: expr, top: bool, temps: dict[str, expr]) -> expr:
         match exp:
             case Constant(_) | Name(_):
                 return exp
+        has_type = exp.has_type
+        exp = rco_expr_(exp, temps)
+        if not top:
+            tmp = gensym("(tmp)")  # use parentheses because they are not allowed in normal variable names.
+            exp.has_type = has_type
+            temps[tmp] = exp
+            exp = Name(tmp)
+        exp.has_type = has_type
+        return exp
+
+    def rco_expr_(exp: expr, temps: dict[str, expr]) -> expr:
+        match exp:
             case Call(Name(n), args):
                 new_args = []
                 for arg in args:
@@ -342,18 +354,12 @@ def rco(prog: Module) -> Module:
                     case Compare(_):
                         exp = Compare(left, [op], [right])
             case Tuple(elements):
-                has_type = exp.has_type
                 exp = Tuple([rco_expr(e, False, temps) for e in elements])
-                exp.has_type = has_type
             case Subscript(item, Constant(index)):
                 exp = Subscript(rco_expr(item, False, temps), Constant(index))
             case _:
                 raise CompileError(exp)
 
-        if not top:
-            tmp = gensym("(tmp)")  # use parentheses because they are not allowed in normal variable names.
-            temps[tmp] = exp
-            exp = Name(tmp)
         return exp
 
     def rco_stmt(statement: stmt) -> list[stmt]:
@@ -361,7 +367,9 @@ def rco(prog: Module) -> Module:
         def temps_to_stmts(temps: dict[str, expr]) -> list[stmt]:
             new_stmts = []
             for temp, value in temps.items():
-                new_stmts.append(Assign([Name(temp)], value))
+                name = Name(temp)
+                name.has_type = value.has_type
+                new_stmts.append(Assign([name], value))
             return new_stmts
 
         temps = {}
@@ -369,11 +377,11 @@ def rco(prog: Module) -> Module:
             case Expr(exp):
                 new_stmt = Expr(rco_expr(exp, True, temps))
             case Assign([var], exp):
-                exp = rco_expr(exp, True, temps)
                 exp_can_operate = True
                 match var, exp:
-                    case Subscript(_, _), Subscript(_, _):
-                        exp_can_operate = False
+                    case Subscript(_, _), s:
+                        if isinstance(s, Subscript) or get_origin(s.has_type) == FixedStr:
+                            exp_can_operate = False
                 new_stmt = Assign([rco_expr(var, True, temps)], rco_expr(exp, exp_can_operate, temps))
             case If(condition, if_true, if_false):
                 new_true = []
@@ -415,15 +423,21 @@ def expose_alloc(prog: Module) -> Module:
     :return: An Ltup program, without Tuple constructors
     """
 
-    def ea_stmt(statement: stmt) -> [stmt]:
+    def ea_stmt(statement: stmt, allocated: set[str]) -> [stmt]:
+        def find_name(lhs):
+            match lhs:
+                case Name(name):
+                    return name
+                case Subscript(l, _):
+                    return find_name(l)
+
         match statement:
-            case Assign([lhs], exp):
+            case Assign([lhs], exp) if find_name(lhs) not in allocated:
                 end = []
                 match exp:
                     case Tuple(elements):
                         exp_type = exp.has_type
                         exp_bytes = (len(elements) + 1) * 8
-
                         for index, element in enumerate(elements):
                             e = Subscript(lhs, Constant(index))
                             e.has_type = get_args(exp_type)[index]
@@ -441,6 +455,7 @@ def expose_alloc(prog: Module) -> Module:
                     case _:
                         return [statement]
                 temp_free_ptr = gensym("(alloc)")
+                allocated.add(find_name(lhs))
                 return [
                     Assign([Name(temp_free_ptr)],
                            BinOp(GlobalValue("free_ptr"), Add(), Constant(exp_bytes))),
@@ -469,8 +484,9 @@ def expose_alloc(prog: Module) -> Module:
             case _:
                 return [statement]
 
+    allocated = set()
     return Module(
-        reduce(lambda x, y: x + y, [ea_stmt(statement) for statement in prog.body])
+        reduce(lambda x, y: x + y, [ea_stmt(statement, allocated) for statement in prog.body])
     )
 
 
@@ -492,7 +508,6 @@ def explicate_control(prog: Module) -> cstr.CProgram:
     def add_stmt(label: str, s: cstr.Stmt):
         if label not in basic_blocks:
             basic_blocks[label] = []
-
         basic_blocks[label].append(s)
 
     builtin_cif_instructions = {
@@ -513,12 +528,19 @@ def explicate_control(prog: Module) -> cstr.CProgram:
                         raise CompileError(exp)
             case GlobalValue(name):
                 return cstr.GlobalValue(name)
-            case Subscript(Name(item), Constant(index)):
-                if get_origin(exp.has_type) == tuple:
+            case Subscript(sub_of, Constant(index)):
+                match sub_of:
+                    case Name(item):
+                        pass
+                    case _:
+                        raise CompileError(sub_of)
+                t = get_origin(sub_of.has_type)
+                if t == tuple:
                     return cstr.Subscript(item, index)
-                else:
+                elif t == FixedStr:
                     return cstr.CharAt(item, index)
-
+                else:
+                    raise CompileError(sub_of.has_type)
             case _:
                 raise CompileError(exp)
 
@@ -641,34 +663,43 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
     }
 
 
-    def si_atm(atm: cstr.Atm) -> x86.Arg:
+    def si_atm(atm: cstr.Atm, dest = None) -> x86.Arg:
+
         match atm:
             case cstr.Name(name):
-                if get_origin(type_of[name]) == tuple:
-                    return x86.VecVar(name)
+                t = type_of[name]
+                if get_origin(t) == tuple or get_origin(t) == FixedStr:
+                    out = x86.VecVar(name)
                 else:
-                    return x86.Var(name)
-            case cstr.ConstantInt(i) | cstr.ConstantBool(i):
-                return x86.Immediate(int(i))
+                    out = x86.Var(name)
+            case cstr.ConstantInt(i):
+                out = x86.Immediate(i)
+                t = int
+            case cstr.ConstantBool(i):
+                out = x86.Immediate(int(i))
+                t = bool
             case cstr.GlobalValue(name):
-                return x86.GlobalVal(name)
+                out = x86.GlobalVal(name)
+                t = x86.GlobalVal
             case _:
                 raise CompileError(atm)
+        match dest:
+            case x86.Var(var):
+                if var not in type_of.keys():
+                    type_of[var] = t
+        return out
 
     def si_exp(exp: cstr.Exp, dest: x86.Arg) -> [x86.Instr]:
 
         def move_to_var(atm):
-            match dest:
-                case x86.Var(var):
-                    type_of[var] = int # not always int, but sufficient to distinguish tuple from non-tuple
-            return x86.NamedInstr("movq", [si_atm(atm), dest])
+            return x86.NamedInstr("movq", [si_atm(atm, dest), dest])
 
         match exp:
             case cstr.AtmExp(cstr.Subscript(name, index)):
                 match dest:
                     case x86.Var(var):
                         type_of[var] = get_args(type_of[name])[index]
-                        if get_origin(type_of[var]) == tuple:
+                        if get_origin(type_of[var]) == tuple or get_origin(type_of[var]) == FixedStr:
                             dest = x86.VecVar(var)
                     case _:
                         raise CompileError(dest)
@@ -683,7 +714,10 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
                     case _:
                         raise CompileError(dest)
                 return [x86.NamedInstr("movq", [x86.VecVar(name), STR_REG]),
-                        x86.NamedInstr("movq", [x86.Deref(STR_REG.val, index + 8), dest])]
+                        x86.NamedInstr("movb", [x86.Deref(STR_REG.val, index + 8), x86.ByteReg("al")]),
+                        x86.NamedInstr("movq", [dest, STR_REG]),
+                        x86.NamedInstr("movb", [x86.ByteReg("al"), x86.Deref(STR_REG.val, 8)]),
+                        x86.NamedInstr("movb", [x86.Immediate(0), x86.Deref(STR_REG.val, 9)])]
             case cstr.AtmExp(atm):
                 return [move_to_var(atm)]
             case cstr.UnaryOp(op, cstr.AtmExp(atm)):
@@ -735,25 +769,26 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
                                ] + si_exp(exp, x86.Deref(TUPLE_REG.val, ((index + 1) * 8)))
                     case cstr.CharAt(lhs_name, index):
                         match exp:
-                            case Name(exp_name):
+                            case cstr.AtmExp(cstr.Name(exp_name)):
                                 pass
                             case _:
                                 raise CompileError(exp)
                         return [
-                                    x86.NamedInstr("movq", [x86.VecVar(exp_name), TUPLE_REG]),
-                                    x86.NamedInstr("movb", [x86.Deref(TUPLE_REG.val, 0), x86.Reg("rax")]),
-                                    x86.NamedInstr("movq", [x86.VecVar(lhs_name), TUPLE_REG]),
-                                    x86.NamedInstr("movb", [x86.Reg("rax"), x86.Deref(TUPLE_REG.val, (index + 8))])
+                                    x86.NamedInstr("movq", [x86.VecVar(exp_name), STR_REG]),
+                                    x86.NamedInstr("movb", [x86.Deref(STR_REG.val, 8), x86.ByteReg("al")]),
+                                    x86.NamedInstr("movq", [x86.VecVar(lhs_name), STR_REG]),
+                                    x86.NamedInstr("movb", [x86.ByteReg("al"), x86.Deref(STR_REG.val, (index + 8))])
                                ]
-                    case var:
+                    case cstr.Name(var):
                         return si_exp(exp, x86.Var(var))
             case cstr.AssignString(name, index):
-                return [x86.NamedInstr("movq", [x86.VecVar(name), x86.Reg("rdi")]),
+                return [x86.NamedInstr("movq", [x86.VecVar(name.var), x86.Reg("rdi")]),
                         x86.NamedInstr("addq", [x86.Immediate(8), x86.Reg("rdi")]),
-                        x86.NamedInstr("movq", [x86.Immediate(f"LC{index}"), x86.Reg("rsi")]),
-                        x86.NamedInstr("movq", [x86.Immediate(len(p.data[index])), x86.Reg("rcx")]),
+                        x86.NamedInstr("leaq", [x86.GlobalVal(f"LC{index}"), x86.Reg("rsi")]),
+                        x86.NamedInstr("movq", [x86.Immediate(len(p.data[index]) + 1), x86.Reg("rcx")]),
                         x86.NamedInstr("cld", []),
-                        x86.Rep(x86.NamedInstr("movsb", []))]
+                        x86.Rep(x86.NamedInstr("movsb", []))
+                        ]
             case cstr.If(cstr.Compare(cstr.AtmExp(atm1), op, cstr.AtmExp(atm2)),
                          cstr.Goto(true_label), cstr.Goto(false_label)):
                 return [x86.NamedInstr("cmpq", [si_atm(atm2), si_atm(atm1)]),
@@ -763,7 +798,7 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
                 return [x86.Jmp(label)]
             case cstr.Print(cstr.AtmExp(atm), print_type):
                 return [x86.NamedInstr("movq", [si_atm(atm), x86.Reg(argument_registers[0])]),
-                        x86.Callq(f"print_{name_of(print_type)}")]
+                        x86.Callq(f"print_{print_type.__name__}")]
             case cstr.Collect(num_bytes):
                 return [x86.NamedInstr("movq", [TOP_OF_STACK, x86.Reg(argument_registers[0])]),
                         x86.NamedInstr("movq", [x86.Immediate(num_bytes), x86.Reg(argument_registers[1])]),
@@ -784,6 +819,8 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
 def reads_writes(instruction: x86.Instr) -> tuple[Set[x86.Var], Set[x86.Var]]:
     num_args = {
         "print_int": 1,
+        "print_bool": 1,
+        "print_FixedStr": 1,
         "collect": 2
     }
     match instruction:
@@ -1219,10 +1256,14 @@ def print_x86(inputs: TupleType[x86.Program, int, int]) -> str:
     def print_program(program: x86.Program) -> str:
         match program:
             case x86.Program(blocks, data):
-                body = "    .text\n"
-                for key, string in data.items():
-                    body += f"{key}:\n"
-                    body += f'    .ascii "{string}\\0"'
+                body = ""
+                if data:
+                    body += ".section .rodata\n"
+                    for key, string in data.items():
+                        body += f"{key}:\n"
+                        body += f'    .asciz "{string}"\n'
+                    body += ".text\n"
+                body += ".globl main\n"
                 for name, block in blocks.items():
                     body += f"{name}:\n"
                     for instruction in block:

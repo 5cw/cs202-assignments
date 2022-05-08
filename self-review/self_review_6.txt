@@ -1,0 +1,41 @@
+overall differences:
+    I do not propagate the types of the expressions to allocation and instruction selection. I do more work than is necessary in liveness analysis, I do more cleanup than is necessary in patching, and I fumbled the heap size but still got good results from the emulator.
+
+pass typecheck:
+    I do not set has_type on some types, which could lead to the compiler not being able to allocate properly.
+    other than that, minor differences in pattern matching.
+
+pass rco:
+    I do not propagate has_type for all operations.
+    other than that, minor differences in pattern matching.
+
+pass expose_alloc:
+    I do not propagate has_type,
+    I do run checks inside if and while statements, which the instructor compiler does not do, which I suppose is a design decision you can make about whether the user should be able to create tuples potentially many times over.
+    I do not set a property called tuple_vars on the cif program.
+
+pass explicate_control:
+    I do not propagate has_type,
+    other than that, minor pattern matching differences.
+
+pass select_instructions:
+    I calculate types on the fly, and store them in a type_of dictionary.
+    Minor pattern differences.
+
+pass uncover_live:
+    I still am doing the complicated construction of graphs to do the analyze_dataflow operation from the book. I also have reads_writes as a global function.
+
+pass build_interference:
+    Minor pattern differences.
+
+pass allocate_registers:
+    I make the mappings for the rootstack go at the end of the mapping list so they can be assigned negative colors using the python index-from-back feature.
+    My code is slightly less readable, and could stand to be organized into functions.
+
+pass patch_instructions:
+    My code removes any blocks with just a jump and connects any blocks which are paired by only jumping to and from each other.
+    Minor pattern differences.
+
+pass print_x86:
+    My code only allocates 16 bytes to the heap I think because I thought that was what the online compiler was doing and I did not at that point fully understand what that line of code did. It worked on my machine for all the test cases, though.
+
