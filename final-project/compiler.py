@@ -6,7 +6,7 @@ from ast import *
 from dataclasses import dataclass
 from collections import OrderedDict, defaultdict
 from functools import reduce
-from typing import List, Set, Dict, Tuple as TupleType, DefaultDict, get_args, get_origin, TypeVar, NewType
+from typing import List, Set, Dict, Tuple as TupleType, DefaultDict, get_args, get_origin, TypeVar, NewType, Optional
 import itertools
 import sys
 import traceback
@@ -52,6 +52,7 @@ class Begin(expr):
         self.stmts = stmts
         self.exp = exp
 
+
 # An "allocate expression" for Python
 # allocates memory for Tuples
 class Allocate(expr):
@@ -83,11 +84,9 @@ class Collect(expr):
         self.num_bytes = num_bytes
 
 
-
 class CompileError(Exception):
     def __init__(self, ast):
         super().__init__(f"Unexpected token: {print_ast(ast)}")
-
 
 
 class TypeCheckError(Exception):
@@ -110,15 +109,11 @@ def with_type(t, e):
 
 TEnv = Dict[str, type]
 
-class FixedStr(tuple): #simpler than figuring out how to properly implement parameterized generics
-    pass
-
-
 
 def typecheck(program: Module) -> Module:
     """
     Typechecks the input program; throws an error if the program is not well-typed.
-    :param e: The Ltup program to typecheck
+    :param e: The Lstr program to typecheck
     :return: The program, if it is well-typed
     """
 
@@ -151,12 +146,19 @@ def typecheck(program: Module) -> Module:
     }
 
     builtin_arg_types = {
-        'print': [int | bool | FixedStr],  # the function is called "print_int" but the online compiler lets you print True
+        'print': [int | bool | str],
+        # the function is called "print_int" but the online compiler lets you print True
+        'ord': [str],
+        'chr': [int],
+        'len': [str | tuple],
         # 'input_int': [],
     }
 
     builtin_output_types = {
         'print': None,
+        'ord': int,
+        'chr': str,
+        'len': int
         # 'input_int': int
     }
 
@@ -184,7 +186,6 @@ def typecheck(program: Module) -> Module:
                 if t == str:
                     if not val.isascii():
                         raise TypeCheckError(f'Please use only ASCII characters.')
-                    t = FixedStr[len(val)]
                 return t
 
             case Name(id):
@@ -219,12 +220,23 @@ def typecheck(program: Module) -> Module:
                     raise CompileError(f'Cannot call "{name}" because it does not exist.')
                 arg_types = [tc_expr(arg, env) for arg in args]
                 arg_types = [get_origin(arg) or arg for arg in arg_types]
-                if len(arg_types) != len(builtin_arg_types) | \
-                        any([not issubclass(at, bat) for at, bat in zip(arg_types, builtin_arg_types[name])]):
-                    raise TypeCheckError(f'Cannot call "{name}" on type(s) {arg_types}.\n'
-                                         f'That call requires type(s) {builtin_arg_types[name]}.')
-                exp.input_types = arg_types
+                if name == "print":
+                    if not issubclass(arg_types[0], builtin_arg_types[name][0]):
+                        raise TypeCheckError(f'Can only print int, str, or bool.')
+                    else:
+                        types = [Constant(arg) for arg in arg_types]
+                        for t in types:
+                            t.has_type = type
+                        args.extend(types)
+                elif name == "len":
+                    if not issubclass(arg_types[0], builtin_arg_types[name][0]):
+                        raise TypeCheckError(f'Can only check length of tuples and strings.')
+                elif arg_types != builtin_arg_types[name]:
+                        raise TypeCheckError(f'Cannot call "{name}" on type(s) {arg_types}.\n'
+                                             f'That call requires type(s) {builtin_arg_types[name]}.')
+
                 return builtin_output_types[name]
+
 
             case Tuple(elements):
                 if len(elements) > MAX_ELEMENTS:
@@ -232,27 +244,29 @@ def typecheck(program: Module) -> Module:
                 exp.has_type = tuple[tuple(tc_expr(e, env) for e in elements)]
                 return exp.has_type
 
-            case Subscript(item, Constant(index)):
+            case Subscript(item, ss):
                 item_tc = tc_expr(item, env)
                 item_type = get_origin(item_tc)
                 item_args = get_args(item_tc)
-                ss_tc = tc_expr(Constant(index), env)
+                ss_tc = tc_expr(ss, env)
                 if ss_tc != int:
-                    raise TypeCheckError(f'Cannot subscript with non-int value {index}.')
-                if item_type == tuple:
+                    raise TypeCheckError(f'Cannot subscript with non-int value {ss}.')
 
+                if item_type == tuple:
                     item_len = len(item_args)
-                    out = item_args[index]
-                elif item_type == FixedStr:
-                    item_len = item_args[0]
-                    out = FixedStr[1]
+                    match ss:
+                        case Constant(int(index)):
+                            pass
+                        case _:
+                            raise TypeCheckError(f'Cannot subscript tuple with non-constant.')
+                    out = item_args[ss]
+                elif item_tc == str:
+                    return str
                 else:
                     raise TypeCheckError(f'Cannot subscript type {item_type}.')
                 if index < 0 or index >= item_len:
                     raise TypeCheckError(f"Index out of bounds for {print_indices(item)}: {index}.")
-
                 return out
-
             case _:
                 raise CompileError(exp)
 
@@ -303,7 +317,6 @@ def typecheck(program: Module) -> Module:
 
     return program
 
-
 ##################################################
 # remove-complex-opera*
 ##################################################
@@ -317,11 +330,14 @@ def rco(prog: Module) -> Module:
     """
 
     def rco_expr(exp: expr, top: bool, temps: dict[str, expr]) -> expr:
+        has_type = exp.has_type
         match exp:
+            case Constant(str(_)):
+                pass
             case Constant(_) | Name(_):
                 return exp
-        has_type = exp.has_type
-        exp = rco_expr_(exp, temps)
+            case _:
+                exp = rco_expr_(exp, temps)
         if not top:
             tmp = gensym("(tmp)")  # use parentheses because they are not allowed in normal variable names.
             exp.has_type = has_type
@@ -337,9 +353,7 @@ def rco(prog: Module) -> Module:
                 for arg in args:
                     new_arg = rco_expr(arg, False, temps)
                     new_args.append(new_arg)
-                input_types = exp.input_types
                 exp = Call(Name(n), new_args)
-                exp.input_types = input_types
             case UnaryOp(op, i):
                 i = rco_expr(i, False, temps)
                 exp = UnaryOp(op, i)
@@ -355,8 +369,8 @@ def rco(prog: Module) -> Module:
                         exp = Compare(left, [op], [right])
             case Tuple(elements):
                 exp = Tuple([rco_expr(e, False, temps) for e in elements])
-            case Subscript(item, Constant(index)):
-                exp = Subscript(rco_expr(item, False, temps), Constant(index))
+            case Subscript(item, index):
+                exp = Subscript(rco_expr(item, False, temps), rco_expr(index, False, temps))
             case _:
                 raise CompileError(exp)
 
@@ -380,7 +394,7 @@ def rco(prog: Module) -> Module:
                 exp_can_operate = True
                 match var, exp:
                     case Subscript(_, _), s:
-                        if isinstance(s, Subscript) or get_origin(s.has_type) == FixedStr:
+                        if isinstance(s, Subscript) or s.has_type == str:
                             exp_can_operate = False
                 new_stmt = Assign([rco_expr(var, True, temps)], rco_expr(exp, exp_can_operate, temps))
             case If(condition, if_true, if_false):
@@ -390,7 +404,8 @@ def rco(prog: Module) -> Module:
                     new_true.extend(rco_stmt(s))
                 for s in if_false:
                     new_false.extend(rco_stmt(s))
-                new_stmt = If(rco_expr(condition, True, temps), new_true, new_false)
+                no_reduce = isinstance(condition, Compare)
+                new_stmt = If(rco_expr(condition, no_reduce, temps), new_true, new_false)
             case While(condition, body, []):
                 new_body = []
                 for s in body:
@@ -417,13 +432,15 @@ def rco(prog: Module) -> Module:
 
 def expose_alloc(prog: Module) -> Module:
     """
-    Exposes allocations in an Ltup program. Replaces Tuple(...) with explicit
+    Exposes allocations in an Lstr program. Replaces Tuple(...) with explicit
     allocation.
-    :param prog: An Ltup program
-    :return: An Ltup program, without Tuple constructors
+    :param prog: An Lstr program
+    :return: An Lstr program, without Tuple constructors
     """
 
-    def ea_stmt(statement: stmt, allocated: set[str]) -> [stmt]:
+
+
+    def ea_stmt(statement: stmt) -> [stmt]:
         def find_name(lhs):
             match lhs:
                 case Name(name):
@@ -432,7 +449,7 @@ def expose_alloc(prog: Module) -> Module:
                     return find_name(l)
 
         match statement:
-            case Assign([lhs], exp) if find_name(lhs) not in allocated:
+            case Assign([lhs], exp):
                 end = []
                 match exp:
                     case Tuple(elements):
@@ -443,50 +460,55 @@ def expose_alloc(prog: Module) -> Module:
                             e.has_type = get_args(exp_type)[index]
                             end.append(Assign([e], element))
                     case Constant(str(s)):
-                        exp_bytes = (len(s) + 1 + 8) # 1 null character, 8 tag bytes
+                        exp_bytes = (len(s) + 1 + 8)  # 1 null character, 8 tag bytes
                         if exp_bytes % 8 != 0:
-                            exp_bytes += 8 - (exp_bytes % 8) #align to boundary
-                        exp_type = FixedStr[len(s)]
+                            exp_bytes += 8 - (exp_bytes % 8)  # align to boundary
+                        exp_type = str
                         end = [statement]
-                    case Subscript(sub, _) if get_origin(sub.has_type) == FixedStr:
+                    case Subscript(sub, _) if sub.has_type == str:
                         exp_bytes = 16
-                        exp_type = FixedStr[1]
+                        exp_type = str
+                        end = [statement]
+                    case Call(Name("chr"), _):
+                        exp_bytes = 16
+                        exp_type = str
                         end = [statement]
                     case _:
                         return [statement]
                 temp_free_ptr = gensym("(alloc)")
-                allocated.add(find_name(lhs))
                 return [
-                    Assign([Name(temp_free_ptr)],
-                           BinOp(GlobalValue("free_ptr"), Add(), Constant(exp_bytes))),
-                    If(
-                        Compare(Name(temp_free_ptr), [Lt()],
-                                [GlobalValue("fromspace_end")]),
-                        [],
-                        [Collect(exp_bytes)]),
-                    Assign([lhs], Allocate(exp_bytes, exp_type))
-                ] + end
+                           Assign([Name(temp_free_ptr)],
+                                  BinOp(GlobalValue("free_ptr"), Add(), Constant(exp_bytes))),
+                           If(
+                               Compare(Name(temp_free_ptr), [Lt()],
+                                       [GlobalValue("fromspace_end")]),
+                               [],
+                               [Collect(exp_bytes)]),
+                           Assign([lhs], Allocate(exp_bytes, exp_type))
+                       ] + end
             case If(condition, if_true, if_false):
                 return [If(
                     condition,
-                    reduce(lambda x, y: x + y, [ea_stmt(statement) for statement in if_true]),
-                    reduce(lambda x, y: x + y, [ea_stmt(statement) for statement in if_false]),
+                    ea_stmts(if_true),
+                    ea_stmts(if_false)
                 )]
             case While(Begin(begin, condition), body, []):
                 return [While(
                     Begin(
-                        reduce(lambda x, y: x + y, [ea_stmt(statement) for statement in begin]),
+                        ea_stmts(begin),
                         condition
                     ),
-                    reduce(lambda x, y: x + y, [ea_stmt(statement) for statement in body]),
+                    ea_stmts(body),
                     []
                 )]
             case _:
                 return [statement]
 
-    allocated = set()
+    def ea_stmts(statements: [stmt]) -> [stmt]:
+        return reduce(lambda x, y: x + y, [ea_stmt(statement) for statement in statements]) if statements else []
+
     return Module(
-        reduce(lambda x, y: x + y, [ea_stmt(statement, allocated) for statement in prog.body])
+        ea_stmts(prog.body)
     )
 
 
@@ -496,9 +518,9 @@ def expose_alloc(prog: Module) -> Module:
 
 def explicate_control(prog: Module) -> cstr.CProgram:
     """
-    Transforms an Ltup Expression into a Ctup program.
-    :param e: An Ltup Expression
-    :return: A Ctup Program
+    Transforms an Lstr Expression into a Ctup program.
+    :param e: An Lstr Expression
+    :return: A Cstr Program
     """
 
     # the basic blocks of the program
@@ -511,7 +533,10 @@ def explicate_control(prog: Module) -> cstr.CProgram:
         basic_blocks[label].append(s)
 
     builtin_cif_instructions = {
-        'print': cstr.Print
+        'print': cstr.Print,
+        'ord': cstr.Ord,
+        'chr': cstr.Chr,
+        'len': cstr.Len
     }
 
     def explicate_atm(exp: expr) -> cstr.Atm:
@@ -524,11 +549,16 @@ def explicate_control(prog: Module) -> cstr.CProgram:
                         return cstr.ConstantInt(i)
                     case bool(b):
                         return cstr.ConstantBool(b)
-                    case _:
-                        raise CompileError(exp)
+                    case str(s):
+                        index = len(data)
+                        data.append(s)
+                        return cstr.StringIndex(index)
+                    case t:
+                        return t
+
             case GlobalValue(name):
                 return cstr.GlobalValue(name)
-            case Subscript(sub_of, Constant(index)):
+            case Subscript(sub_of, index):
                 match sub_of:
                     case Name(item):
                         pass
@@ -536,9 +566,14 @@ def explicate_control(prog: Module) -> cstr.CProgram:
                         raise CompileError(sub_of)
                 t = get_origin(sub_of.has_type)
                 if t == tuple:
-                    return cstr.Subscript(item, index)
-                elif t == FixedStr:
-                    return cstr.CharAt(item, index)
+                    match index:
+                        case Constant(i):
+                            pass
+                        case _:
+                            raise CompileError(index)
+                    return cstr.Subscript(item, i)
+                elif sub_of.has_type == str:
+                    return cstr.CharAt(item, explicate_atm(index))
                 else:
                     raise CompileError(sub_of.has_type)
             case _:
@@ -554,6 +589,9 @@ def explicate_control(prog: Module) -> cstr.CProgram:
                 return cstr.BinOp(explicate_expr(left), op, explicate_expr(right))
             case Compare(left, [op], [right]):
                 return cstr.Compare(explicate_expr(left), op, explicate_expr(right))
+            case Call(Name(name), args):
+                call = builtin_cif_instructions[name](*[explicate_atm(arg) for arg in args])
+                return call
             case _:
                 return cstr.AtmExp(explicate_atm(exp))
 
@@ -561,16 +599,13 @@ def explicate_control(prog: Module) -> cstr.CProgram:
         new_current = current
         match statement:
             case Expr(Call(Name(name), args)):
-                call = builtin_cif_instructions[name](*[explicate_expr(arg) for arg in args],
-                                                      *statement.value.input_types)
+                call = builtin_cif_instructions[name](*[explicate_expr(arg) for arg in args])
                 add_stmt(current, call)
             case Assign([var], exp):
                 lhs = explicate_atm(var)
                 match exp:
                     case Constant(str(s)):
-                        index = len(data)
-                        data.append(s)
-                        add_stmt(current, cstr.AssignString(lhs, index))
+                        add_stmt(current, cstr.AssignString(lhs, explicate_atm(exp)))
                     case _:
                         add_stmt(current, cstr.Assign(lhs, explicate_expr(exp)))
             case Collect(num_bytes):
@@ -637,8 +672,8 @@ def explicate_control(prog: Module) -> cstr.CProgram:
 
 def select_instructions(p: cstr.CProgram) -> x86.Program:
     """
-    Transforms a Ctup program into a pseudo-x86 assembly program.
-    :param p: a Ctup program
+    Transforms a Cstr program into a pseudo-x86 assembly program.
+    :param p: a Cstr program
     :return: a pseudo-x86 program
     """
 
@@ -662,13 +697,14 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
 
     }
 
+    panic = False
 
-    def si_atm(atm: cstr.Atm, dest = None) -> x86.Arg:
+    def si_atm(atm: cstr.Atm, dest=None) -> x86.Arg:
 
         match atm:
             case cstr.Name(name):
-                t = type_of[name]
-                if get_origin(t) == tuple or get_origin(t) == FixedStr:
+                t = type_of.get(name)
+                if get_origin(t) == tuple or t == str:
                     out = x86.VecVar(name)
                 else:
                     out = x86.Var(name)
@@ -699,7 +735,7 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
                 match dest:
                     case x86.Var(var):
                         type_of[var] = get_args(type_of[name])[index]
-                        if get_origin(type_of[var]) == tuple or get_origin(type_of[var]) == FixedStr:
+                        if get_origin(type_of[var]) == tuple or type_of[var] == str:
                             dest = x86.VecVar(var)
                     case _:
                         raise CompileError(dest)
@@ -709,15 +745,18 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
             case cstr.AtmExp(cstr.CharAt(name, index)):
                 match dest:
                     case x86.Var(var):
-                        type_of[var] = FixedStr[1]
+                        type_of[var] = str
                         dest = x86.VecVar(var)
                     case _:
                         raise CompileError(dest)
-                return [x86.NamedInstr("movq", [x86.VecVar(name), STR_REG]),
-                        x86.NamedInstr("movb", [x86.Deref(STR_REG.val, index + 8), x86.ByteReg("al")]),
-                        x86.NamedInstr("movq", [dest, STR_REG]),
-                        x86.NamedInstr("movb", [x86.ByteReg("al"), x86.Deref(STR_REG.val, 8)]),
-                        x86.NamedInstr("movb", [x86.Immediate(0), x86.Deref(STR_REG.val, 9)])]
+                return [
+                            x86.NamedInstr("movq", [dest, x86.Reg(argument_registers[0])]),
+                            x86.NamedInstr("movq", [x86.VecVar(name), x86.Reg(argument_registers[1])]),
+                            x86.NamedInstr("movq", [si_atm(index), x86.Reg(argument_registers[2])]),
+                            x86.Callq("take_char"),
+                            x86.NamedInstr("cmpq", [x86.Immediate(0), x86.Reg("rax")]),
+                            x86.JmpIf("z", "conclusion")
+                        ]
             case cstr.AtmExp(atm):
                 return [move_to_var(atm)]
             case cstr.UnaryOp(op, cstr.AtmExp(atm)):
@@ -735,6 +774,47 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
                 return [x86.NamedInstr("cmpq", [si_atm(atm2), si_atm(atm1)]),
                         x86.Set(op_cc[name_of(op)], x86.ByteReg("al")),
                         x86.NamedInstr("movzbq", [x86.ByteReg("al"), dest])]
+            case cstr.Ord(ord_of):
+                match dest:
+                    case x86.Var(var):
+                        type_of[var] = int
+                    case _:
+                        raise CompileError(dest)
+                match ord_of:
+                    case cstr.StringIndex(index):
+                        first = [x86.NamedInstr("leaq", [x86.GlobalVal(f"LC{index}"), STR_REG])]
+                    case _:
+                        first = [x86.NamedInstr("movq", [si_atm(ord_of), STR_REG]),
+                                 x86.NamedInstr("addq", [x86.Immediate(8), STR_REG])]
+                return first + [
+                    x86.NamedInstr("movq", [x86.Deref(STR_REG.val, 0), x86.Reg("rax")]),
+                    x86.NamedInstr("movzbq", [x86.ByteReg("al"), dest])
+                ]
+
+            case cstr.Chr(chr_of):
+                match dest:
+                    case x86.Var(var):
+                        type_of[var] = str
+                        dest = x86.VecVar(var)
+                    case _:
+                        raise CompileError(dest)
+                return [x86.NamedInstr("movq", [dest, STR_REG]),
+                        x86.NamedInstr("movq", [si_atm(chr_of), x86.Reg("rax")]),
+                        x86.NamedInstr("movb", [x86.ByteReg("al"), x86.Deref(STR_REG.val, 8)]),
+                        x86.NamedInstr("movb", [x86.Immediate(0), x86.Deref(STR_REG.val, 9)])]
+            case cstr.Len(len_of):
+                match dest:
+                    case x86.Var(var):
+                        type_of[var] = int
+                match len_of:
+                    case cstr.StringIndex(index):
+                        return [x86.NamedInstr("movq", [x86.Immediate(len(p.data[index])), dest])]
+                    case _:
+                        return [x86.NamedInstr("movq", [si_atm(len_of), x86.Reg(argument_registers[0])]),
+                                x86.NamedInstr("addq", [x86.Immediate(8), x86.Reg(argument_registers[0])]),
+                                x86.Callq("strlen"),
+                                x86.NamedInstr("movq", [x86.Reg("rax"), dest])]
+
             case cstr.Allocate(num_bytes, tuple_type):
                 match dest:
                     case x86.Var(var):
@@ -774,14 +854,17 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
                             case _:
                                 raise CompileError(exp)
                         return [
-                                    x86.NamedInstr("movq", [x86.VecVar(exp_name), STR_REG]),
-                                    x86.NamedInstr("movb", [x86.Deref(STR_REG.val, 8), x86.ByteReg("al")]),
-                                    x86.NamedInstr("movq", [x86.VecVar(lhs_name), STR_REG]),
-                                    x86.NamedInstr("movb", [x86.ByteReg("al"), x86.Deref(STR_REG.val, (index + 8))])
-                               ]
+                            x86.NamedInstr("movq", [x86.VecVar(lhs_name), x86.Reg(argument_registers[0])]),
+                            x86.NamedInstr("movq", [x86.VecVar(exp_name), x86.Reg(argument_registers[1])]),
+                            x86.NamedInstr("movq", [si_atm(index), x86.Reg(argument_registers[2])]),
+                            x86.Callq("put_char"),
+                            x86.NamedInstr("cmpq", [x86.Immediate(0), x86.Reg("rax")]),
+                            x86.JmpIf("z", "conclusion")
+                        ]
+
                     case cstr.Name(var):
                         return si_exp(exp, x86.Var(var))
-            case cstr.AssignString(name, index):
+            case cstr.AssignString(name, cstr.StringIndex(index)):
                 return [x86.NamedInstr("movq", [x86.VecVar(name.var), x86.Reg("rdi")]),
                         x86.NamedInstr("addq", [x86.Immediate(8), x86.Reg("rdi")]),
                         x86.NamedInstr("leaq", [x86.GlobalVal(f"LC{index}"), x86.Reg("rsi")]),
@@ -796,7 +879,7 @@ def select_instructions(p: cstr.CProgram) -> x86.Program:
                         x86.Jmp(false_label)]
             case cstr.Goto(label):
                 return [x86.Jmp(label)]
-            case cstr.Print(cstr.AtmExp(atm), print_type):
+            case cstr.Print(cstr.AtmExp(atm), cstr.AtmExp(print_type)):
                 return [x86.NamedInstr("movq", [si_atm(atm), x86.Reg(argument_registers[0])]),
                         x86.Callq(f"print_{print_type.__name__}")]
             case cstr.Collect(num_bytes):
@@ -820,7 +903,10 @@ def reads_writes(instruction: x86.Instr) -> tuple[Set[x86.Var], Set[x86.Var]]:
     num_args = {
         "print_int": 1,
         "print_bool": 1,
-        "print_FixedStr": 1,
+        "print_str": 1,
+        "strlen": 1,
+        "take_char": 3,
+        "put_char": 3,
         "collect": 2
     }
     match instruction:
@@ -853,8 +939,10 @@ def reads_writes(instruction: x86.Instr) -> tuple[Set[x86.Var], Set[x86.Var]]:
 
     return {read for read in reads if is_valid(read)}, {write for write in writes if is_valid(write)}
 
+
 graph_forward = {}
 graph_backward = {}
+
 
 ##################################################
 # uncover-live
@@ -971,6 +1059,7 @@ class InterferenceGraph:
         strings = [print_ast(a) + ' -- ' + print_ast(b) for a, b in pairs]
         return 'InterferenceGraph{\n ' + ',\n '.join(strings) + '\n}'
 
+
 def build_interference(inputs: TupleType[x86.Program, Dict[str, List[Set[x86.Var]]]]) -> \
         TupleType[x86.Program, InterferenceGraph]:
     """
@@ -1007,7 +1096,6 @@ def build_interference(inputs: TupleType[x86.Program, Dict[str, List[Set[x86.Var
                         for live2 in live_after:
                             if live != live2:
                                 graph.add_edge(live, live2)
-
 
     def bi_block(instructions: [x86.Instr], live_after_sets: [Set[x86.Var]]):
         for instruction, live_after in zip(instructions, live_after_sets):
@@ -1164,7 +1252,7 @@ def patch_instructions(inputs: TupleType[x86.Program, int, int]) -> TupleType[x8
             case x86.NamedInstr("movq", [loc1, loc2]) if loc1 == loc2:
                 return []
             case x86.NamedInstr(name, [loc1, loc2]) if isinstance(loc1, x86.Deref | x86.GlobalVal) and \
-                                                        isinstance(loc2, x86.Deref | x86.GlobalVal):
+                                                       isinstance(loc2, x86.Deref | x86.GlobalVal):
                 return [
                     x86.NamedInstr("movq", [loc1, x86.Reg("rax")]),
                     x86.NamedInstr(name, [x86.Reg("rax"), loc2])
@@ -1210,6 +1298,7 @@ def patch_instructions(inputs: TupleType[x86.Program, int, int]) -> TupleType[x8
             while next_label in empty_labels.keys():
                 next_label = empty_labels[next_label]
             empty_labels[label] = next_label
+            label_joins.pop(label, None)
             del blocks[label]
 
         for label in blocks.keys():

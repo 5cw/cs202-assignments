@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
 #include "runtime.h"
 
 // To do: we need to account for the "any" type. -Jeremy
@@ -520,10 +521,40 @@ void print_bool(int64_t x) {
   }
 }
 
-void print_FixedStr(int64_t x) {
+void print_str(int64_t x) {
     char* str = ((char*) (x + 8));
     printf("%s\n", str);
 }
+
+void out_of_bounds(int64_t index, int length){
+    printf("Tried to access character %ld on string of length %d. Aborting.\n", index, length);
+}
+
+int64_t put_char(int64_t dest, int64_t src, int64_t index) {
+    char* dest_str = ((char*) (dest + 8));
+    char* src_str = ((char*) (src + 8));
+    int length = strlen(dest_str);
+    if (strlen(src_str) > 0 && index >= 0 && index < length){
+        dest_str[index] = src_str[0];
+        return 1;
+    }
+    out_of_bounds(index, length);
+    return 0;
+}
+
+int64_t take_char(int64_t dest, int64_t src, int64_t index) {
+    char* dest_str = ((char*) (dest + 8));
+    char* src_str = ((char*) (src + 8));
+    int length = strlen(src_str);
+    if (index >= 0 && index < length){
+        dest_str[0] = src_str[index];
+        dest_str[1] = '\0';
+        return 1;
+    }
+    out_of_bounds(index, length);
+    return 0;
+}
+
 
 void print_void() {
   printf("#<void>");

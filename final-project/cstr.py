@@ -16,6 +16,10 @@ class ConstantBool(Atm):
     val: bool
 
 @dataclass(eq=True)
+class StringIndex(Atm):
+    index: int
+
+@dataclass(eq=True)
 class Name(Atm):
     var: str
 
@@ -31,7 +35,7 @@ class Subscript(Atm):
 @dataclass(eq=True)
 class CharAt(Atm):
     var: str
-    offset: int
+    offset: Atm
 
 ##################################################
 @dataclass(eq=True)
@@ -64,6 +68,18 @@ class Allocate(Exp):
     num_bytes: int
     tuple_type: any
 
+@dataclass(eq=True)
+class Ord(Exp):
+    var: Atm
+
+@dataclass(eq=True)
+class Chr(Exp):
+    var: Atm
+
+@dataclass(eq=True)
+class Len(Exp):
+    var: Atm
+
 ##################################################
 @dataclass(eq=True)
 class Stmt(AST):
@@ -72,7 +88,7 @@ class Stmt(AST):
 @dataclass(eq=True)
 class Print(Stmt):
     exp: Exp
-    print_type: type
+    print_type: any
 
 @dataclass(eq=True)
 class Collect(Stmt):
@@ -86,7 +102,7 @@ class Assign(Stmt):
 @dataclass(eq=True)
 class AssignString(Stmt):
     var: Atm
-    data_index: int
+    data_index: Atm
 
 @dataclass(eq=True)
 class Return(Stmt):

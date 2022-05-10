@@ -1,3 +1,5 @@
-x = (1, 2)
-y = (3, 4)
-print(x[0])
+m = ord("n")
+print(chr(m + 2))
+x = "201349043"
+print(len(x))
+

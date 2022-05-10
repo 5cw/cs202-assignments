@@ -16,7 +16,7 @@ run_gcc = True
 if len(sys.argv) == 2 and sys.argv[1] == '--run-gcc':
     run_gcc = True
 error = False
-for file_name in ["test1.py"]:#sorted(os.listdir('tests')):
+for file_name in ["capitalize.py"]:#sorted(os.listdir('tests')):
     if file_name.endswith('.py'):
         with open('tests/' + file_name) as f:
             print(f'Testing program {file_name}...')
